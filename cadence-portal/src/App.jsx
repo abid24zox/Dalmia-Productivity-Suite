@@ -3,9 +3,12 @@ import {
   Lock, User, LogOut, LayoutGrid, Calendar, Users, ClipboardCheck, Plus,
   Sparkles, Play, Square, Check, X, ChevronLeft, ChevronRight, Target, Clock,
   AlertTriangle, Mic, FileText, Upload, Pencil, Trash2, Loader2, MessageSquare, Star,
-  Gauge, Type as TypeIcon, Wand2, CalendarClock, ArrowRight, AlertCircle, ClipboardList,
+  Gauge, Type as TypeIcon, Wand2, CalendarClock, ArrowRight, AlertCircle, ClipboardList, Cloud,
 } from "lucide-react";
 import { api } from "./api";
+import OneDriveConnect from "./OneDriveConnect";
+import { MSAL_CONFIGURED } from "./msal";
+import { pickOneDriveFile } from "./onedrivePicker";
 
 /* =====================================================================
  * Cadence portal — LIVE. State is the shared Cadence service (single source
@@ -18,7 +21,7 @@ async function aiComplete(system, user) {
 }
 function parseJSON(t) { const c = t.replace(/```json/gi, "").replace(/```/g, "").trim(); return JSON.parse(c.slice(c.indexOf("{"), c.lastIndexOf("}") + 1)); }
 const AI = {
-  async decompose(title, type) { return parseJSON(await aiComplete('Enterprise delivery planner. Break a work into 3-6 sub-works, each with 1-3 activities. Return ONLY JSON: {"subworks":[{"title":string,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}', `Work: "${title}". Type: ${type}.`)); },
+  async decompose(title, type) { return parseJSON(await aiComplete('Enterprise delivery planner. Break the work into 2-4 works (phases of execution), each with 2-4 sub-works, each with 1-3 activities. Return ONLY JSON: {"works":[{"title":string,"subworks":[{"title":string,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}]}', `Work: "${title}". Type: ${type}.`)); },
   async extractMom(text) { return parseJSON(await aiComplete('Read meeting minutes, extract work. Return ONLY JSON: {"works":[{"title":string,"type":"procurement"|"cost"|"onboarding"|"compliance"|"general","activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}', `Minutes:\n"""${text}"""`)); },
   async modifyPlan(planText, instruction) { return parseJSON(await aiComplete('Edit a project plan. Return ONLY JSON: {"ops":[{"op":"add_activity","subwork":string,"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}|{"op":"add_subwork","title":string}|{"op":"retype","match":string,"type":"self"|"meeting"|"call"|"site"}]}', `Current plan:\n${planText}\n\nInstruction: ${instruction}`)); },
   async insight(title, m) { return parseJSON(await aiComplete('Execution advisor to a CEO. Return ONLY JSON: {"read":string(2 sentences),"action":string}', `Work "${title}". Planning ${m.planning}%, execution ${m.execution}%. Behind: ${m.behind}. Stuck: ${m.stuck || "none"}.`)); },
@@ -151,7 +154,7 @@ function workStats(works, acts, topId) {
   const overdue = a.filter((x) => isOverdue(x)).length;
   const unscheduled = a.length - scheduled;
   const team = [...new Set(a.map((x) => x.assigneeId).filter(Boolean))];
-  const deliv = a.filter((x) => x.deliverable).length;
+  const deliv = a.filter((x) => x.deliverable).length + works.filter((w) => ids.includes(w.id) && w.deliverable).length;
   const nextDue = a.filter((x) => x.date && x.status !== "executed").map((x) => x.date).sort()[0] || null;
   return { total: a.length, done, scheduled, unscheduled, overdue, team, deliv, nextDue };
 }
@@ -283,12 +286,26 @@ function MultiModalInput({ value, onChange, placeholder, onPdf }) {
       setWorking(null);
     }
   };
+  const pickOD = async () => {
+    setErr("");
+    try {
+      const picked = await pickOneDriveFile();
+      if (!picked) return; // cancelled
+      setDocName(picked.name); setWorking("extracting");
+      const text = await api.aiExtract(picked.dataB64, picked.name);
+      onChange(text || ""); if (!text) setErr("No readable text found in that file.");
+    } catch (e) { setErr(e.message || "Couldn't read that file from OneDrive."); setDocName(null); }
+    setWorking(null);
+  };
   const clearDoc = () => { setDocName(null); };
   return (
     <div>
       <div className="mb-2 flex gap-1">{[["type", "Type", TypeIcon], ["voice", "Voice", Mic], ["document", "Attach / doc", FileText]].map(([k, l, I]) => <button key={k} onClick={() => setMode(k)} className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium ${mode === k ? "bg-slate-900 text-white" : "border border-slate-200 text-slate-500 hover:bg-slate-50"}`}><I size={12} /> {l}</button>)}</div>
       {mode === "voice" && <div className="mb-2 flex items-center gap-2">{working === "transcribing" ? <span className="inline-flex items-center gap-1.5 text-sm text-slate-500"><Loader2 size={14} className="animate-spin" /> Transcribing…</span> : !rec ? <button onClick={start} className={btnLight}><Mic size={14} /> Record</button> : <button onClick={stop} className="inline-flex items-center gap-1.5 rounded-md bg-rose-500 px-3 py-2 text-sm font-medium text-white"><Square size={13} /> Stop</button>}<span className="text-xs text-slate-400">{CAP.deepgram ? "Deepgram speech-to-text · transcript is editable below." : "Transcript is editable below."}</span></div>}
-      {mode === "document" && <label className="mb-2 flex cursor-pointer items-center gap-2 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50"><Upload size={14} /> Attach a document — PDF, Word (.docx), .md or .txt (or paste below)<input type="file" accept=".pdf,application/pdf,.docx,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.txt,.md,text/plain" className="hidden" onChange={(e) => readF(e.target.files && e.target.files[0])} /></label>}
+      {mode === "document" && <div className="mb-2 flex flex-col gap-1.5 sm:flex-row">
+        <label className="flex flex-1 cursor-pointer items-center gap-2 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50"><Upload size={14} /> From this computer — PDF, Word, .md or .txt<input type="file" accept=".pdf,application/pdf,.docx,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.txt,.md,text/plain" className="hidden" onChange={(e) => readF(e.target.files && e.target.files[0])} /></label>
+        {MSAL_CONFIGURED && <button onClick={pickOD} disabled={working === "extracting"} className="flex flex-1 items-center justify-center gap-2 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50 disabled:opacity-50"><Cloud size={14} /> From OneDrive</button>}
+      </div>}
       {docName && <div className="mb-2 flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs text-blue-700"><FileText size={13} /> <span className="min-w-0 flex-1 truncate">{docName}</span>{working === "extracting" ? <Loader2 size={13} className="animate-spin" /> : <button onClick={clearDoc} className="text-blue-400 hover:text-blue-700"><X size={13} /></button>}</div>}
       {err && <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-700">{err}</div>}
       <textarea value={value} onChange={(e) => onChange(e.target.value)} rows={mode === "type" ? 4 : 5} placeholder={placeholder} className={inputCls} />
@@ -413,19 +430,21 @@ export default function App() {
 
   return (
     <div className="w-full bg-stone-50 text-slate-800" style={{ minHeight: 720, fontFeatureSettings: '"tnum"' }}>
-      <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3">
-        <div className="flex items-center gap-2.5"><div className="flex h-7 w-7 items-center justify-center rounded-md bg-slate-900 font-mono text-sm text-white">C</div><div><div className="text-sm font-medium leading-none text-slate-900">Cadence</div><div className="mt-0.5 text-xs text-slate-400">work &amp; initiative OS · prototype</div></div></div>
-        <div className="flex items-center gap-3"><button onClick={openNudges} className={`${btnLight} relative`} title="Nudges"><MessageSquare size={14} />{unreadNudges > 0 && <span className="absolute -right-1.5 -top-1.5 rounded-full bg-rose-500 px-1 text-xs font-medium text-white">{unreadNudges}</span>}</button><div className="text-right"><div className="text-xs font-medium text-slate-700">{me.name}</div><div className="text-xs text-slate-400">{me.title} · {me.level}</div></div><button onClick={logout} className={btnLight}><LogOut size={14} /></button></div>
+      <div className="flex items-center justify-between border-b border-slate-200 bg-white px-3 py-3 sm:px-5">
+        <div className="flex min-w-0 items-center gap-2.5"><div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-slate-900 font-mono text-sm text-white">C</div><div className="min-w-0"><div className="text-sm font-medium leading-none text-slate-900">Cadence</div><div className="mt-0.5 hidden text-xs text-slate-400 sm:block">work &amp; initiative OS · prototype</div></div></div>
+        <div className="flex shrink-0 items-center gap-2 sm:gap-3"><OneDriveConnect compact /><button onClick={openNudges} className={`${btnLight} relative`} title="Nudges"><MessageSquare size={14} />{unreadNudges > 0 && <span className="absolute -right-1.5 -top-1.5 rounded-full bg-rose-500 px-1 text-xs font-medium text-white">{unreadNudges}</span>}</button><div className="hidden text-right sm:block"><div className="text-xs font-medium text-slate-700">{me.name}</div><div className="text-xs text-slate-400">{me.title} · {me.level}</div></div><button onClick={logout} className={btnLight}><LogOut size={14} /></button></div>
       </div>
-      <div className="flex items-center gap-1 border-b border-slate-200 bg-white px-5">
-        {tabs.map(([k, l, I]) => <button key={k} onClick={() => { setTab(k); setOpenId(null); }} className={`flex items-center gap-2 border-b-2 px-3 py-2.5 text-sm ${tab === k ? "border-slate-900 text-slate-900" : "border-transparent text-slate-400 hover:text-slate-600"}`}><I size={15} /><span className="font-medium">{l}</span>{k === "approvals" && pending.length > 0 && <span className="rounded-full bg-rose-500 px-1.5 text-xs font-medium text-white">{pending.length}</span>}</button>)}
-        {isOrg && <div className="ml-auto flex items-center gap-2 py-1.5">
-          <button onClick={() => { setTab("portfolio"); setOpenId(null); setReviewMode(true); }} className={btnLight}><Pencil size={14} /> Review &amp; update</button>
-          <button onClick={() => (me.level === "md" ? setObjModal(true) : setCapture(true))} className={btnDark}><Plus size={14} /> {me.level === "md" ? "New objective" : "New initiative"}</button>
+      <div className="flex flex-col gap-1.5 border-b border-slate-200 bg-white px-3 py-1.5 sm:flex-row sm:items-center sm:gap-1 sm:px-5 sm:py-0">
+        <div className="-mx-1 flex items-center gap-1 overflow-x-auto px-1">
+          {tabs.map(([k, l, I]) => <button key={k} onClick={() => { setTab(k); setOpenId(null); }} className={`flex shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-sm ${tab === k ? "border-slate-900 text-slate-900" : "border-transparent text-slate-400 hover:text-slate-600"}`}><I size={15} /><span className="font-medium">{l}</span>{k === "approvals" && pending.length > 0 && <span className="rounded-full bg-rose-500 px-1.5 text-xs font-medium text-white">{pending.length}</span>}</button>)}
+        </div>
+        {isOrg && <div className="flex items-center gap-2 sm:ml-auto sm:py-1.5">
+          <button onClick={() => { setTab("portfolio"); setOpenId(null); setReviewMode(true); }} className={`${btnLight} flex-1 sm:flex-none`}><Pencil size={14} /> Review &amp; update</button>
+          <button onClick={() => (me.level === "md" ? setObjModal(true) : setCapture(true))} className={`${btnDark} flex-1 sm:flex-none`}><Plus size={14} /> {me.level === "md" ? "New objective" : "New initiative"}</button>
         </div>}
       </div>
-      {note && <div className="mx-5 mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">{note}</div>}
-      <div className="p-5">
+      {note && <div className="mx-3 mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 sm:mx-5">{note}</div>}
+      <div className="p-3 sm:p-5">
         {tab === "portfolio" && !open && <Portfolio {...{ works, acts, crs, me, isOrg, onOpen: setOpenId, goApprovals, view: portView, setView: setPortView, reviewMode, setReviewMode, onRemark: setRemarkNode }} />}
         {tab === "portfolio" && open && <NodeView {...{ nodeId: openId, user: me, works, acts, crs, isOrg, busy, setBusy, flash, patchAct, patchWork, store, onOpen: setOpenId, onRemark: setRemarkNode, goApprovals }} />}
         {tab === "myday" && <MyDay {...{ me, works, acts, busy, setBusy, flash, patchAct, store }} />}
@@ -834,6 +853,7 @@ function NodeView({ nodeId, user, works, acts, crs, isOrg, busy, setBusy, flash,
                   <button onClick={doInsight} disabled={!!busy} className={btnLight}>{busy === "insight" ? <Loader2 size={14} className="animate-spin" /> : <Gauge size={14} />} Where do I stand</button>
                   <button onClick={() => setModify(true)} disabled={!!busy} className={btnLight}><Pencil size={14} /> Modify plan</button>
                   <button onClick={() => setAddUn(true)} disabled={!!busy} className={btnLight}><Plus size={14} /> Unplanned</button>
+                  {(node.level === "work" || node.level === "subwork") && <button onClick={() => setDeliv(node)} className={btnLight}>{node.deliverable ? <><Star size={14} className="text-amber-500" /> {node.deliverable.score}/100</> : <><FileText size={14} /> Deliverable</>}</button>}
                 </div>
                 {insight && <div className="mt-3 space-y-1 text-sm"><p className="text-slate-700">{insight.read}</p><p className="text-violet-800"><span className="font-medium">Next: </span>{insight.action}</p></div>}
               </>
@@ -916,7 +936,7 @@ function NodeView({ nodeId, user, works, acts, crs, isOrg, busy, setBusy, flash,
 
       {modify && <ModifyPlan {...{ work: node, planText: planText(), subs, acts, store, busy, setBusy, flash, onClose: () => setModify(false) }} />}
       {addUn && <AddUnplanned {...{ subs, store, flash, onClose: () => setAddUn(false) }} />}
-      {deliv && <Deliverable {...{ activity: deliv, work: node, store, busy, setBusy, flash, onClose: () => setDeliv(null) }} />}
+      {deliv && <Deliverable {...{ node: deliv, parentTitle: deliv.level ? (works.find((w) => w.id === deliv.parentId)?.title || "") : node.title, store, busy, setBusy, flash, onClose: () => setDeliv(null) }} />}
       {edit && <ActivityEdit {...{ activity: edit, onSave: (p) => { patchAct(edit.id, p); setEdit(null); flash("Activity updated."); }, onClose: () => setEdit(null) }} />}
       {addChild && <QuickCreate {...{ me: user, parent: node, level: childLevel, works, store, busy, setBusy, flash, onClose: () => setAddChild(false), onCreated: (id) => { if (childLevel !== "activity") onOpen(id); } }} />}
     </div>
@@ -942,8 +962,8 @@ function ActivityEdit({ activity, onSave, onClose }) {
       <div className="mb-3 rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-700">{activity.title}</div>
       <div className="space-y-3">
         <div><label className="mb-1 block text-xs text-slate-500">Assign to</label><select value={assignee} onChange={(e) => setAssignee(e.target.value)} className={inputCls}><option value="">Unassigned</option>{USERS.map((u) => <option key={u.id} value={u.id}>{u.name} — {u.title}</option>)}</select></div>
-        <div className="grid grid-cols-3 gap-2">
-          <div className="col-span-2"><label className="mb-1 block text-xs text-slate-500">Date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls} /></div>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="sm:col-span-2"><label className="mb-1 block text-xs text-slate-500">Date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls} /></div>
           <div><label className="mb-1 block text-xs text-slate-500">Hours</label><input type="number" value={hrs} onChange={(e) => setHrs(Number(e.target.value))} className={inputCls} /></div>
         </div>
         <div><label className="mb-1 block text-xs text-slate-500">Type</label><select value={type} onChange={(e) => setType(e.target.value)} className={inputCls}>{ACT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</select></div>
@@ -1042,7 +1062,7 @@ function MyDay({ me, works, acts, busy, setBusy, flash, patchAct, store }) {
         </div>
       </div>
       {quick && <QuickAdd {...{ me, works, date: sel, store, flash, onClose: () => setQuick(false) }} />}
-      {deliv && <Deliverable {...{ activity: deliv, work: works.find((w) => w.id === deliv.workId), store, busy, setBusy, flash, onClose: () => setDeliv(null) }} />}
+      {deliv && <Deliverable {...{ node: deliv, parentTitle: works.find((w) => w.id === deliv.workId)?.title || "", store, busy, setBusy, flash, onClose: () => setDeliv(null) }} />}
       {propose && <ProposeChange {...{ activity: propose, me, store, flash, onClose: () => setPropose(null) }} />}
     </div>
   );
@@ -1153,27 +1173,30 @@ function Capture({ me, teams, store, works, busy, setBusy, flash, onClose, onOpe
   const objectives = works.filter((w) => w.level === "objective");
   const [title, setTitle] = useState(""); const [type, setType] = useState("general"); const [parentObj, setParentObj] = useState(objectives[0] ? objectives[0].id : ""); const [objective, setObjective] = useState(""); const [deadline, setDeadline] = useState(""); const [teamId, setTeamId] = useState(teams[0] ? teams[0].id : ""); const [text, setText] = useState(""); const [teamModal, setTeamModal] = useState(false);
   const team = teams.find((t) => t.id === teamId);
-  const build = (topTitle, ty, subs) => {
+  const build = (topTitle, ty, worksList) => {
     const topId = nid("w"); const tpl = METRIC_BY_TYPE[ty] || METRIC_BY_TYPE.general; const memberIds = team ? team.memberIds : [];
     const nw = [{ id: topId, parentId: parentObj || null, level: "initiative", title: topTitle, type: ty, ownerId: me.id, teamId: teamId || null, scope: memberIds.length > 1 ? "group" : "individual", objective: objective || null, deadline: deadline || null, result: { metric: tpl.metric, unit: tpl.unit, baseline: 0, target: 100, current: 0 } }];
     const na = []; const load = {}; memberIds.forEach((id) => (load[id] = 0)); let ai = 0;
     const dl = deadline ? parseISO(deadline) : null; const span = dl ? Math.max(1, Math.round((dl - TODAY) / MSD)) : 5;
-    (subs || []).forEach((sw) => { const sid = nid("w"); nw.push({ id: sid, parentId: topId, level: "subwork", title: sw.title, type: ty, ownerId: me.id }); (sw.activities || []).forEach((ac) => { let assignee = null, date = null; if (memberIds.length) { assignee = memberIds.reduce((a, b) => (load[a] <= load[b] ? a : b)); load[assignee] += Number(ac.estimateHrs) || 2; date = iso(addDays(TODAY, ai % span)); ai++; } na.push({ id: nid("a"), workId: sid, title: ac.title, assigneeId: assignee, date, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" }); }); });
+    (worksList || []).forEach((wk) => {
+      const wid = nid("w"); nw.push({ id: wid, parentId: topId, level: "work", title: wk.title, type: ty, ownerId: me.id });
+      (wk.subworks || []).forEach((sw) => { const sid = nid("w"); nw.push({ id: sid, parentId: wid, level: "subwork", title: sw.title, type: ty, ownerId: me.id }); (sw.activities || []).forEach((ac) => { let assignee = null, date = null; if (memberIds.length) { assignee = memberIds.reduce((a, b) => (load[a] <= load[b] ? a : b)); load[assignee] += Number(ac.estimateHrs) || 2; date = iso(addDays(TODAY, ai % span)); ai++; } na.push({ id: nid("a"), workId: sid, title: ac.title, assigneeId: assignee, date, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" }); }); });
+    });
     store.addWorks(nw); if (na.length) store.addActs(na); return topId;
   };
   const run = async () => {
     if (!title.trim() && !text.trim()) return; setBusy("cap");
-    try { const ctx = `${title.trim()}${objective ? ". Objective: " + objective : ""}${text ? ". Plan shared by the lead: " + text : ""}`.slice(0, 1500); const out = await AI.decompose(ctx, type); const id = build(title.trim() || text.slice(0, 50), type, out.subworks); flash(team ? `AI drafted the plan and assigned it to ${team.name}.` : "AI drafted the plan."); onOpen(id); }
-    catch { const id = build(title.trim() || "New work", type, [{ title: "Plan", activities: [{ title: "Define scope & owners", estimateHrs: 2, type: "self" }] }]); flash("AI unavailable — created a starter you can edit."); onOpen(id); }
+    try { const ctx = `${title.trim()}${objective ? ". Objective: " + objective : ""}${text ? ". Plan shared by the lead: " + text : ""}`.slice(0, 1500); const out = await AI.decompose(ctx, type); const id = build(title.trim() || text.slice(0, 50), type, out.works); flash(team ? `AI drafted the plan and assigned it to ${team.name}.` : "AI drafted the plan."); onOpen(id); }
+    catch { const id = build(title.trim() || "New work", type, [{ title: "Plan", subworks: [{ title: "Get started", activities: [{ title: "Define scope & owners", estimateHrs: 2, type: "self" }] }] }]); flash("AI unavailable — created a starter you can edit."); onOpen(id); }
     setBusy(null);
   };
   return (
     <Modal onClose={onClose} wide>
       <div className="mb-4 flex items-center justify-between"><h3 className="text-sm font-medium text-slate-900">Capture &amp; plan a work</h3><button onClick={onClose} className="text-slate-400"><X size={18} /></button></div>
-      <div className="mb-3 grid grid-cols-3 gap-2"><div className="col-span-2"><label className="mb-1 block text-xs text-slate-500">Title</label><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Roll out MFA to all field staff" className={inputCls} /></div><div><label className="mb-1 block text-xs text-slate-500">Type</label><select value={type} onChange={(e) => setType(e.target.value)} className={inputCls}>{Object.keys(METRIC_BY_TYPE).map((t) => <option key={t} value={t}>{t}</option>)}</select></div></div>
+      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3"><div className="sm:col-span-2"><label className="mb-1 block text-xs text-slate-500">Title</label><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Roll out MFA to all field staff" className={inputCls} /></div><div><label className="mb-1 block text-xs text-slate-500">Type</label><select value={type} onChange={(e) => setType(e.target.value)} className={inputCls}>{Object.keys(METRIC_BY_TYPE).map((t) => <option key={t} value={t}>{t}</option>)}</select></div></div>
       <div className="mb-3"><label className="mb-1 block text-xs text-slate-500">Sits under objective</label><select value={parentObj} onChange={(e) => setParentObj(e.target.value)} className={inputCls}><option value="">None (top-level initiative)</option>{objectives.map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}</select></div>
-      <div className="mb-3 grid grid-cols-3 gap-2">
-        <div className="col-span-2"><label className="mb-1 block text-xs text-slate-500">Assign to team</label><div className="flex gap-2"><select value={teamId} onChange={(e) => setTeamId(e.target.value)} className={inputCls}><option value="">No team (leave unassigned)</option>{teams.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.memberIds.length})</option>)}</select><button onClick={() => setTeamModal(true)} className={btnLight}><Users size={14} /> New / merge</button></div></div>
+      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <div className="sm:col-span-2"><label className="mb-1 block text-xs text-slate-500">Assign to team</label><div className="flex gap-2"><select value={teamId} onChange={(e) => setTeamId(e.target.value)} className={inputCls}><option value="">No team (leave unassigned)</option>{teams.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.memberIds.length})</option>)}</select><button onClick={() => setTeamModal(true)} className={btnLight}><Users size={14} /> New / merge</button></div></div>
         <div><label className="mb-1 block text-xs text-slate-500">Deadline</label><input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} className={inputCls} /></div>
       </div>
       {team && <div className="mb-3 flex flex-wrap items-center gap-1.5">{team.memberIds.map((id) => <span key={id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600"><Avatar id={id} size={16} /> {uFirst(id)} <span className="text-slate-400">{fnOf(id)}</span></span>)}</div>}
@@ -1220,7 +1243,7 @@ function RemarkModal({ node, works, acts, busy, setBusy, flash, onSubmit, onClos
       <div className="mb-3 flex items-center gap-2 rounded-md bg-slate-50 px-3 py-2"><span className={`h-2.5 w-2.5 rounded-full ${th.bar}`} /><span className={`rounded px-1.5 py-0.5 text-xs font-medium ${th.chip}`}>{LEVEL_LABEL[node.level]}</span><span className="min-w-0 truncate text-sm font-medium text-slate-800">{node.title}</span></div>
       <label className="mb-1 block text-xs font-medium text-slate-600">Your remark</label>
       <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} className={`${inputCls} mb-3`} placeholder="e.g. Pull the vendor demo forward; loop in Finance before the PO goes out; HOD sign-off should be a meeting." />
-      <div className="mb-3 grid grid-cols-2 gap-3">
+      <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div><label className="mb-1 block text-xs font-medium text-slate-600">Re-assign owner (optional)</label><select value={owner} onChange={(e) => setOwner(e.target.value)} className={inputCls}>{USERS.map((u) => <option key={u.id} value={u.id}>{u.name} · {u.fn}</option>)}</select></div>
         <div><label className="mb-1 block text-xs font-medium text-slate-600">Shift dates + deadline (days)</label><input type="number" value={shift} onChange={(e) => setShift(Number(e.target.value) || 0)} className={inputCls} placeholder="e.g. -3 or 5" /></div>
       </div>
@@ -1271,7 +1294,7 @@ function QuickCreate({ me, parent, level, works, store, busy, setBusy, flash, on
     try {
       let sys, usr;
       if (isObj) { sys = 'Turn the note into ONE crisp enterprise objective (an outcome, not a task). Return ONLY JSON: {"title":string,"type":"procurement"|"cost"|"onboarding"|"compliance"|"general","metric":string,"unit":string,"target":number}'; usr = `Note:\n"""${text}"""`; }
-      else if (level === "initiative") { sys = 'Draft an initiative that fulfils the objective. Return ONLY JSON: {"title":string,"type":"procurement"|"cost"|"onboarding"|"compliance"|"general","subworks":[{"title":string,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}'; usr = `Objective: "${parent.title}". Note:\n"""${text}"""`; }
+      else if (level === "initiative") { sys = 'Draft an initiative that fulfils the objective, broken into 2-4 works (phases of execution), each with 2-4 sub-works, each with 1-3 activities. Return ONLY JSON: {"title":string,"type":"procurement"|"cost"|"onboarding"|"compliance"|"general","works":[{"title":string,"subworks":[{"title":string,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}]}'; usr = `Objective: "${parent.title}". Note:\n"""${text}"""`; }
       else if (level === "work") { sys = 'Draft a work (a phase of execution). Return ONLY JSON: {"title":string,"type":"procurement"|"cost"|"onboarding"|"compliance"|"general","subworks":[{"title":string,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}'; usr = `Initiative: "${parent.title}". Note:\n"""${text}"""`; }
       else if (level === "subwork") { sys = 'Draft a sub-work with 1-4 concrete activities. Return ONLY JSON: {"title":string,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}'; usr = `Parent: "${parent.title}". Note:\n"""${text}"""`; }
       else { sys = 'Turn the note into ONE task. Return ONLY JSON: {"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}'; usr = `Sub-work: "${parent.title}". Note:\n"""${text}"""`; }
@@ -1281,7 +1304,8 @@ function QuickCreate({ me, parent, level, works, store, busy, setBusy, flash, on
       if (isObj && d.metric) { setHasMetric(true); setMetric(d.metric); setUnit(d.unit || "%"); setTarget(d.target || 100); }
       if (isAct) { if (d.estimateHrs) setHrs(Number(d.estimateHrs) || 2); if (d.type) setActType(d.type); }
       if (level === "subwork") setSubs(d.activities || []);
-      if (isContainer) setSubs(d.subworks || []);
+      if (level === "initiative") setSubs(d.works || []);
+      if (level === "work") setSubs(d.subworks || []);
       flash("AI drafted it — review the fields, then create.");
     } catch { const t = (text.split("\n").find((l) => l.trim()) || "").slice(0, 90).trim(); if (t) setTitle(t); flash("AI unavailable — fill the fields in and create."); }
     setBusy(null);
@@ -1296,6 +1320,7 @@ function QuickCreate({ me, parent, level, works, store, busy, setBusy, flash, on
     if (level === "initiative") node.result = { metric: tpl.metric, unit: tpl.unit, baseline: 0, target: 100, current: 0 };
     nw.push(node);
     if (level === "subwork") { subs.forEach((ac) => na.push({ id: nid("a"), workId: topId, title: ac.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" })); }
+    else if (level === "initiative") { subs.forEach((wk) => { const wid = nid("w"); nw.push({ id: wid, parentId: topId, level: "work", title: wk.title, ownerId: me.id, type }); (wk.subworks || []).forEach((sw) => { const sid = nid("w"); nw.push({ id: sid, parentId: wid, level: "subwork", title: sw.title, ownerId: me.id, type }); (sw.activities || []).forEach((ac) => na.push({ id: nid("a"), workId: sid, title: ac.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" })); }); }); }
     else if (isContainer) { subs.forEach((sw) => { const sid = nid("w"); nw.push({ id: sid, parentId: topId, level: "subwork", title: sw.title, ownerId: me.id, type }); (sw.activities || []).forEach((ac) => na.push({ id: nid("a"), workId: sid, title: ac.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" })); }); }
     store.addWorks(nw); if (na.length) store.addActs(na);
     flash(`${label} created.`); onCreated && onCreated(topId); onClose();
@@ -1308,17 +1333,17 @@ function QuickCreate({ me, parent, level, works, store, busy, setBusy, flash, on
       <label className="mb-1 block text-xs font-medium text-slate-600">{label} name</label>
       <input value={title} onChange={(e) => setTitle(e.target.value)} className={`${inputCls} mb-3`} placeholder={isObj ? "e.g. Become the lowest-cost clinker producer in the region" : isAct ? "e.g. Call the vendor to confirm delivery dates" : `Name this ${label.toLowerCase()}`} />
 
-      {(isObj || isContainer) && <div className="mb-3 grid grid-cols-2 gap-3">
+      {(isObj || isContainer) && <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div><label className="mb-1 block text-xs font-medium text-slate-600">Type</label><select value={type} onChange={(e) => setType(e.target.value)} className={inputCls}>{Object.keys(METRIC_BY_TYPE).map((t) => <option key={t} value={t}>{t}</option>)}</select></div>
         <div><label className="mb-1 block text-xs font-medium text-slate-600">Deadline</label><input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} className={inputCls} /></div>
       </div>}
 
       {isObj && <div className="mb-3">
         <label className="mb-1 flex items-center gap-2 text-xs font-medium text-slate-600"><input type="checkbox" checked={hasMetric} onChange={(e) => setHasMetric(e.target.checked)} /> North-star metric</label>
-        {hasMetric && <div className="grid grid-cols-3 gap-2 text-xs"><div><label className="mb-1 block text-slate-500">Metric</label><input value={metric} onChange={(e) => setMetric(e.target.value)} className={inputCls} placeholder="Cost / tonne" /></div><div><label className="mb-1 block text-slate-500">Target</label><input type="number" value={target} onChange={(e) => setTarget(e.target.value)} className={inputCls} /></div><div><label className="mb-1 block text-slate-500">Unit</label><input value={unit} onChange={(e) => setUnit(e.target.value)} className={inputCls} /></div></div>}
+        {hasMetric && <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-3"><div><label className="mb-1 block text-slate-500">Metric</label><input value={metric} onChange={(e) => setMetric(e.target.value)} className={inputCls} placeholder="Cost / tonne" /></div><div><label className="mb-1 block text-slate-500">Target</label><input type="number" value={target} onChange={(e) => setTarget(e.target.value)} className={inputCls} /></div><div><label className="mb-1 block text-slate-500">Unit</label><input value={unit} onChange={(e) => setUnit(e.target.value)} className={inputCls} /></div></div>}
       </div>}
 
-      {isAct && <div className="mb-3 grid grid-cols-3 gap-2"><div><label className="mb-1 block text-xs font-medium text-slate-600">Hours</label><input type="number" value={hrs} onChange={(e) => setHrs(Number(e.target.value))} className={inputCls} /></div><div><label className="mb-1 block text-xs font-medium text-slate-600">Type</label><select value={actType} onChange={(e) => setActType(e.target.value)} className={inputCls}>{ACT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</select></div><div><label className="mb-1 block text-xs font-medium text-slate-600">Date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls} /></div></div>}
+      {isAct && <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3"><div><label className="mb-1 block text-xs font-medium text-slate-600">Hours</label><input type="number" value={hrs} onChange={(e) => setHrs(Number(e.target.value))} className={inputCls} /></div><div><label className="mb-1 block text-xs font-medium text-slate-600">Type</label><select value={actType} onChange={(e) => setActType(e.target.value)} className={inputCls}>{ACT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</select></div><div><label className="mb-1 block text-xs font-medium text-slate-600">Date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls} /></div></div>}
 
       <div className="mb-3 rounded-lg border border-violet-200 bg-violet-50 p-3">
         <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-violet-800"><Sparkles size={14} /> Describe it, dictate, or attach a PDF — AI fills the fields{isContainer ? " and a starter breakdown" : ""}</div>
@@ -1326,7 +1351,7 @@ function QuickCreate({ me, parent, level, works, store, busy, setBusy, flash, on
         <button onClick={draftIt} disabled={busy || (!text.trim() && !pdf)} className={`${btnViolet} mt-2 w-full`}>{busy === "draft" ? <><Loader2 size={15} className="animate-spin" /> Reading…</> : <><Sparkles size={15} /> Draft with AI</>}</button>
       </div>
 
-      {subs.length > 0 && <div className="mb-3"><div className="mb-1 text-xs font-medium text-slate-500">{level === "subwork" ? "Activities" : "Sub-works"} AI drafted ({subs.length})</div><div className="max-h-40 space-y-1 overflow-y-auto">{subs.map((c, i) => <div key={i} className="flex items-center gap-2 rounded-md bg-slate-50 px-3 py-1.5 text-sm text-slate-700"><span className="min-w-0 flex-1 truncate">{c.title}</span>{c.activities ? <span className="shrink-0 text-xs text-slate-400">{c.activities.length} activities</span> : null}<button onClick={() => setSubs(subs.filter((_, j) => j !== i))} className="shrink-0 text-slate-300 hover:text-rose-500"><X size={13} /></button></div>)}</div></div>}
+      {subs.length > 0 && <div className="mb-3"><div className="mb-1 text-xs font-medium text-slate-500">{level === "subwork" ? "Activities" : level === "initiative" ? "Works" : "Sub-works"} AI drafted ({subs.length})</div><div className="max-h-40 space-y-1 overflow-y-auto">{subs.map((c, i) => <div key={i} className="flex items-center gap-2 rounded-md bg-slate-50 px-3 py-1.5 text-sm text-slate-700"><span className="min-w-0 flex-1 truncate">{c.title}</span>{c.subworks ? <span className="shrink-0 text-xs text-slate-400">{c.subworks.length} sub-works</span> : c.activities ? <span className="shrink-0 text-xs text-slate-400">{c.activities.length} activities</span> : null}<button onClick={() => setSubs(subs.filter((_, j) => j !== i))} className="shrink-0 text-slate-300 hover:text-rose-500"><X size={13} /></button></div>)}</div></div>}
 
       <button onClick={create} disabled={!title.trim()} className={`${btnDark} w-full`}><Check size={14} /> Create {label.toLowerCase()}</button>
     </Modal>
@@ -1382,7 +1407,7 @@ function AddUnplanned({ subs, store, flash, onClose }) {
       <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium text-slate-900">Add unplanned activity</h3><button onClick={onClose} className="text-slate-400"><X size={18} /></button></div>
       <p className="mb-3 text-xs text-slate-400">Something that came up mid-flight and changes the plan.</p>
       <label className="mb-1 block text-xs text-slate-500">What needs doing</label><input value={title} onChange={(e) => setTitle(e.target.value)} className={`${inputCls} mb-3`} placeholder="e.g. Emergency security patch review" />
-      <div className="mb-4 grid grid-cols-3 gap-2 text-xs"><div><label className="mb-1 block text-slate-500">Under</label><select value={sw} onChange={(e) => setSw(e.target.value)} className={inputCls}>{subs.map((s) => <option key={s.id} value={s.id}>{s.title.slice(0, 18)}</option>)}</select></div><div><label className="mb-1 block text-slate-500">Hours</label><input type="number" value={hrs} onChange={(e) => setHrs(Number(e.target.value))} className={inputCls} /></div><div><label className="mb-1 block text-slate-500">Type</label><select value={type} onChange={(e) => setType(e.target.value)} className={inputCls}>{ACT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</select></div></div>
+      <div className="mb-4 grid grid-cols-1 gap-2 text-xs sm:grid-cols-3"><div><label className="mb-1 block text-slate-500">Under</label><select value={sw} onChange={(e) => setSw(e.target.value)} className={inputCls}>{subs.map((s) => <option key={s.id} value={s.id}>{s.title.slice(0, 18)}</option>)}</select></div><div><label className="mb-1 block text-slate-500">Hours</label><input type="number" value={hrs} onChange={(e) => setHrs(Number(e.target.value))} className={inputCls} /></div><div><label className="mb-1 block text-slate-500">Type</label><select value={type} onChange={(e) => setType(e.target.value)} className={inputCls}>{ACT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</select></div></div>
       <button onClick={() => { if (!title.trim() || !sw) return; store.addActs([{ id: nid("a"), workId: sw, title: title.trim(), assigneeId: null, date: null, status: "planned", plannedHrs: hrs, actualHrs: null, actType: type, unplanned: true }]); flash("Unplanned activity added."); onClose(); }} disabled={!title.trim()} className={`${btnDark} w-full`}>Add to plan</button>
     </Modal>
   );
@@ -1403,7 +1428,7 @@ function ProposeChange({ activity, me, store, flash, onClose }) {
       <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium text-slate-900">Propose a plan change</h3><button onClick={onClose} className="text-slate-400"><X size={18} /></button></div>
       <p className="mb-3 text-xs text-slate-400">On “{activity.title}”. Your organizer approves before it changes the plan.</p>
       <div className="mb-3 flex flex-wrap gap-1">{kinds.map(([k, l]) => <button key={k} onClick={() => pick(k)} className={`rounded-md px-2.5 py-1.5 text-xs font-medium ${kind === k ? "bg-slate-900 text-white" : "border border-slate-200 text-slate-500 hover:bg-slate-50"}`}>{l}</button>)}</div>
-      {kind === "add_activity" && <div className="mb-3 grid grid-cols-3 gap-2 text-xs"><div className="col-span-2"><label className="mb-1 block text-slate-500">New activity</label><input value={title} onChange={(e) => setTitle(e.target.value)} className={inputCls} placeholder="e.g. Re-run for missed depots" /></div><div><label className="mb-1 block text-slate-500">Hours</label><input type="number" value={hrs} onChange={(e) => setHrs(Number(e.target.value))} className={inputCls} /></div></div>}
+      {kind === "add_activity" && <div className="mb-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-3"><div className="sm:col-span-2"><label className="mb-1 block text-slate-500">New activity</label><input value={title} onChange={(e) => setTitle(e.target.value)} className={inputCls} placeholder="e.g. Re-run for missed depots" /></div><div><label className="mb-1 block text-slate-500">Hours</label><input type="number" value={hrs} onChange={(e) => setHrs(Number(e.target.value))} className={inputCls} /></div></div>}
       {kind === "extend" && <div className="mb-3 text-xs"><label className="mb-1 block text-slate-500">Extra hours needed</label><input type="number" value={hrs} onChange={(e) => setHrs(Number(e.target.value))} className={`${inputCls} w-28`} /></div>}
       {kind === "reassign" && <div className="mb-3 text-xs"><label className="mb-1 block text-slate-500">Hand over to</label><select value={to} onChange={(e) => setTo(e.target.value)} className={inputCls}><option value="">Pick a person</option>{USERS.filter((u) => u.id !== me.id).map((u) => <option key={u.id} value={u.id}>{u.name} — {u.title}</option>)}</select></div>}
       {kind === "blocked" && <div className="mb-3 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">Flags the activity as blocked so your organizer sees it in “Needs attention”.</div>}
@@ -1412,19 +1437,33 @@ function ProposeChange({ activity, me, store, flash, onClose }) {
     </Modal>
   );
 }
-function Deliverable({ activity, work, store, busy, setBusy, flash, onClose }) {
-  const [name, setName] = useState(activity.deliverable ? activity.deliverable.name : ""); const [content, setContent] = useState(activity.deliverable ? activity.deliverable.content : ""); const [result, setResult] = useState(activity.deliverable || null); const [reading, setReading] = useState(false);
+function Deliverable({ node, parentTitle, store, busy, setBusy, flash, onClose }) {
+  const isWorkNode = !!node.level; // works/subworks carry a `level`; activities never do
+  const [name, setName] = useState(node.deliverable ? node.deliverable.name : ""); const [content, setContent] = useState(node.deliverable ? node.deliverable.content : ""); const [result, setResult] = useState(node.deliverable || null); const [reading, setReading] = useState(false);
   const readF = async (f) => {
     if (!f) return; setName(f.name); const n = f.name.toLowerCase();
     if (n.endsWith(".txt") || n.endsWith(".md") || f.type.startsWith("text")) { const r = new FileReader(); r.onload = () => setContent(String(r.result || "").slice(0, 8000)); r.readAsText(f); }
     else if (n.endsWith(".pdf") || n.endsWith(".docx") || n.endsWith(".doc")) { setReading(true); try { const b64 = await fileToB64(f); const text = await api.aiExtract(b64, f.name); setContent(text || ""); } catch (e) { flash(e.message || "Couldn't read that document."); } setReading(false); }
   };
-  const score = async () => { setBusy("score"); let out; try { out = await AI.score(work ? work.title : "", activity.title, content || name); } catch { out = { score: content.length > 200 ? 72 : 55, verdict: "Reasonable draft", feedback: "AI scoring unavailable; provisional score." }; } const d = { name: name || "deliverable", content, ...out }; setResult(d); store.patchAct(activity.id, { deliverable: d }); setBusy(null); flash(`Deliverable scored ${out.score}/100.`); };
+  const pickOD = async () => {
+    try {
+      const picked = await pickOneDriveFile();
+      if (!picked) return; // cancelled
+      setName(picked.name); setReading(true);
+      const text = await api.aiExtract(picked.dataB64, picked.name);
+      setContent(text || "");
+    } catch (e) { flash(e.message || "Couldn't read that file from OneDrive."); }
+    setReading(false);
+  };
+  const score = async () => { setBusy("score"); let out; try { out = await AI.score(parentTitle || "", node.title, content || name); } catch { out = { score: content.length > 200 ? 72 : 55, verdict: "Reasonable draft", feedback: "AI scoring unavailable; provisional score." }; } const d = { name: name || "deliverable", content, ...out }; setResult(d); if (isWorkNode) store.patchWork(node.id, { deliverable: d }); else store.patchAct(node.id, { deliverable: d }); setBusy(null); flash(`Deliverable scored ${out.score}/100.`); };
   return (
     <Modal onClose={onClose}>
-      <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium text-slate-900">Deliverable — “{activity.title}”</h3><button onClick={onClose} className="text-slate-400"><X size={18} /></button></div>
+      <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium text-slate-900">Deliverable — “{node.title}”</h3><button onClick={onClose} className="text-slate-400"><X size={18} /></button></div>
       <p className="mb-3 text-xs text-slate-400">Attach the output (PO, email, PPT, doc). AI checks fit to the work. PDF / Word / .md / .txt are read automatically; for other files paste the content or a summary.</p>
-      <label className="mb-2 flex cursor-pointer items-center gap-2 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50"><Upload size={14} /> {reading ? <span className="inline-flex items-center gap-1"><Loader2 size={13} className="animate-spin" /> Reading {name}…</span> : (name || "Choose a file — PDF, Word, .md, .txt")}<input type="file" accept=".pdf,.docx,.doc,.txt,.md,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="hidden" onChange={(e) => readF(e.target.files && e.target.files[0])} /></label>
+      <div className="mb-2 flex flex-col gap-1.5 sm:flex-row">
+        <label className="flex flex-1 cursor-pointer items-center gap-2 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50"><Upload size={14} /> {reading ? <span className="inline-flex items-center gap-1"><Loader2 size={13} className="animate-spin" /> Reading {name}…</span> : (name || "Choose a file — PDF, Word, .md, .txt")}<input type="file" accept=".pdf,.docx,.doc,.txt,.md,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="hidden" onChange={(e) => readF(e.target.files && e.target.files[0])} /></label>
+        {MSAL_CONFIGURED && <button onClick={pickOD} disabled={reading} className="flex flex-1 items-center justify-center gap-2 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50 disabled:opacity-50"><Cloud size={14} /> From OneDrive</button>}
+      </div>
       <label className="mb-1 block text-xs text-slate-500">Content / summary</label><textarea value={content} onChange={(e) => setContent(e.target.value)} rows={4} className={`${inputCls} mb-3`} placeholder="Paste the deliverable text or a summary…" />
       <button onClick={score} disabled={busy || (!content.trim() && !name)} className={`${btnViolet} w-full`}>{busy === "score" ? <><Loader2 size={15} className="animate-spin" /> Scoring…</> : <><Sparkles size={15} /> Score with AI</>}</button>
       {result && <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="flex items-center gap-2"><div className="font-mono text-2xl font-medium text-violet-700">{result.score}<span className="text-sm text-slate-400">/100</span></div><div className="text-sm font-medium text-slate-700">{result.verdict}</div></div><div className="mt-1 text-sm text-slate-600">{result.feedback}</div></div>}

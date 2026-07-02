@@ -16,7 +16,12 @@
       "Bash(curl -s \"localhost:4000/api/attention?userId=u_vik\")",
       "Bash(curl -s -X POST localhost:4000/api/ai/complete -H \"content-type: application/json\" -d '{\"system\":\"Reply with exactly the word OK.\",\"user\":\"hi\"}')",
       "Bash(pkill -f \"node server.js\")",
-      "Bash(npx vite *)"
+      "Bash(npx vite *)",
+      "Bash(npx esbuild *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:5183/src/App.jsx)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:5183/src/msal.js)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:5183/src/OneDriveConnect.jsx)"
     ]
   }
 }
