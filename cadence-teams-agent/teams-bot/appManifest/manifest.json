@@ -1,0 +1,41 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.16/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.16",
+  "version": "1.0.0",
+  "id": "REPLACE_WITH_YOUR_TEAMS_APP_ID",
+  "packageName": "com.contoso.cadence",
+  "developer": {
+    "name": "Contoso",
+    "websiteUrl": "https://cadence.contoso.com",
+    "privacyUrl": "https://cadence.contoso.com/privacy",
+    "termsOfUseUrl": "https://cadence.contoso.com/terms"
+  },
+  "name": { "short": "Cadence", "full": "Cadence — work & initiative OS" },
+  "description": {
+    "short": "Plan and operate enterprise work from Teams.",
+    "full": "Cadence lets executives plan initiatives, assign them to teams, check what's at risk, and approve plan changes — directly in Teams, synced with the Cadence portal."
+  },
+  "icons": { "color": "color.png", "outline": "outline.png" },
+  "accentColor": "#111827",
+  "bots": [
+    {
+      "botId": "REPLACE_WITH_YOUR_BOT_APP_ID",
+      "scopes": ["personal", "team", "groupchat"],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": ["personal"],
+          "commands": [
+            { "title": "Portfolio", "description": "Show my portfolio and what's at risk" },
+            { "title": "Plan an initiative", "description": "Draft and assign a new initiative to a team" },
+            { "title": "Approvals", "description": "Review pending plan-change approvals" },
+            { "title": "Capacity", "description": "See who has capacity this week" }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": ["cadence.contoso.com"]
+}

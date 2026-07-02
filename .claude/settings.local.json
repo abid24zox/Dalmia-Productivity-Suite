@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(node server.js)",
+      "Bash(curl -s localhost:4000/api/health)",
+      "Bash(curl -s -X POST localhost:4000/api/login -H \"content-type: application/json\" -d '{\"username\":\"vikram\",\"password\":\"md@2026\"}')",
+      "Bash(curl -s \"localhost:4000/api/portfolio?userId=u_vik\")",
+      "Bash(curl -s localhost:4000/api/snapshot)",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(d\\);console.log\\('works',j.works.length,'acts',j.acts.length,'users',j.users.length,'teams',j.teams.length,'crs',j.crs.length\\)}\\)\")",
+      "Bash(curl -s \"localhost:4000/api/initiatives/laptops\")",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(d\\);console.log\\('title',j.title,'| subworks',j.subworks.length,'| first sub acts', j.subworks[0]&&j.subworks[0].activities.length\\)}\\)\")",
+      "Bash(curl -s -X PATCH localhost:4000/api/activities/a6 -H \"content-type: application/json\" -d '{\"assigneeId\":\"u_kav\",\"date\":\"2026-07-05\"}')",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(d\\);console.log\\('activity.assigneeId',j.activity.assigneeId,'| snapshot works',j.snapshot.works.length\\)}\\)\")",
+      "Bash(curl -s \"localhost:4000/api/resolve?kind=team&q=IT%20Ops\")",
+      "Bash(curl -s \"localhost:4000/api/attention?userId=u_vik\")",
+      "Bash(curl -s -X POST localhost:4000/api/ai/complete -H \"content-type: application/json\" -d '{\"system\":\"Reply with exactly the word OK.\",\"user\":\"hi\"}')",
+      "Bash(pkill -f \"node server.js\")",
+      "Bash(npx vite *)"
+    ]
+  }
+}
