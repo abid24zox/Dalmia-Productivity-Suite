@@ -38,6 +38,8 @@ const parseISO = (s) => (s ? sod(new Date(s + "T00:00:00")) : null);
 const startOfWeek = (d) => addDays(d, -((sod(d).getDay() + 6) % 7));
 const fmtFull = (d) => d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
 const isOverdue = (a) => a.date && parseISO(a.date) < TODAY && a.status !== "executed";
+// Scopes an activity set to a due-date cutoff (e.g. for "as of this date" analysis) — no-op when no date is given.
+const actsUpTo = (acts, dueISO) => (dueISO ? acts.filter((a) => a.date && parseISO(a.date) <= parseISO(dueISO)) : acts);
 
 /* ---------- data ---------- */
 // Client id generator — timestamped so ids the portal creates never collide
@@ -201,6 +203,8 @@ function breadcrumbPath(works, user, nodeId) {
   return path;
 }
 function scopeInitiatives(works, acts, user) { const homes = homeNodes(works, acts, user); const ids = new Set(homes.flatMap((h) => subtreeIds(works, h.id))); return works.filter((w) => w.level === "initiative" && ids.has(w.id)); }
+// Objectives a user can see — MD sees all; everyone else sees only objectives that parent one of their scoped initiatives.
+function scopedObjectives(works, acts, user) { const inits = scopeInitiatives(works, acts, user); return works.filter((w) => w.level === "objective" && (user.level === "md" || inits.some((i) => i.parentId === w.id))); }
 
 /* ---------- ui atoms ---------- */
 const inputCls = "w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-slate-400";
@@ -326,7 +330,7 @@ export default function App() {
   const [busy, setBusy] = useState(null);
   const [note, setNote] = useState(null);
   const [capture, setCapture] = useState(false);
-  const [portView, setPortView] = useState("cards");
+  const [portView, setPortView] = useState("scorecard");
   const [reviewMode, setReviewMode] = useState(false);
   const [nudgeOpen, setNudgeOpen] = useState(false);
   const [objModal, setObjModal] = useState(false);
@@ -432,7 +436,7 @@ export default function App() {
     <div className="w-full bg-stone-50 text-slate-800" style={{ minHeight: 720, fontFeatureSettings: '"tnum"' }}>
       <div className="flex items-center justify-between border-b border-slate-200 bg-white px-3 py-3 sm:px-5">
         <div className="flex min-w-0 items-center gap-2.5"><div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-slate-900 font-mono text-sm text-white">C</div><div className="min-w-0"><div className="text-sm font-medium leading-none text-slate-900">Cadence</div><div className="mt-0.5 hidden text-xs text-slate-400 sm:block">work &amp; initiative OS · prototype</div></div></div>
-        <div className="flex shrink-0 items-center gap-2 sm:gap-3"><OneDriveConnect compact /><button onClick={openNudges} className={`${btnLight} relative`} title="Nudges"><MessageSquare size={14} />{unreadNudges > 0 && <span className="absolute -right-1.5 -top-1.5 rounded-full bg-rose-500 px-1 text-xs font-medium text-white">{unreadNudges}</span>}</button><div className="hidden text-right sm:block"><div className="text-xs font-medium text-slate-700">{me.name}</div><div className="text-xs text-slate-400">{me.title} · {me.level}</div></div><button onClick={logout} className={btnLight}><LogOut size={14} /></button></div>
+        <div className="flex shrink-0 items-center gap-2 sm:gap-3"><OneDriveConnect compact /><button onClick={openNudges} className={`${btnLight} relative`} title="Nudges"><MessageSquare size={14} />{unreadNudges > 0 && <span className="absolute -right-1.5 -top-1.5 rounded-full bg-rose-500 px-1 text-xs font-medium text-white">{unreadNudges}</span>}</button><div className="hidden items-center gap-2 sm:flex"><Avatar id={me.id} size={28} /><div className="text-right"><div className="text-xs font-medium text-slate-700">{me.name}</div><div className="text-xs text-slate-400">{me.title} · {me.level}</div></div></div><button onClick={logout} className={btnLight}><LogOut size={14} /></button></div>
       </div>
       <div className="flex flex-col gap-1.5 border-b border-slate-200 bg-white px-3 py-1.5 sm:flex-row sm:items-center sm:gap-1 sm:px-5 sm:py-0">
         <div className="-mx-1 flex items-center gap-1 overflow-x-auto px-1">
@@ -446,13 +450,13 @@ export default function App() {
       {note && <div className="mx-3 mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 sm:mx-5">{note}</div>}
       <div className="p-3 sm:p-5">
         {tab === "portfolio" && !open && <Portfolio {...{ works, acts, crs, me, isOrg, onOpen: setOpenId, goApprovals, view: portView, setView: setPortView, reviewMode, setReviewMode, onRemark: setRemarkNode }} />}
-        {tab === "portfolio" && open && <NodeView {...{ nodeId: openId, user: me, works, acts, crs, isOrg, busy, setBusy, flash, patchAct, patchWork, store, onOpen: setOpenId, onRemark: setRemarkNode, goApprovals }} />}
+        {tab === "portfolio" && open && <NodeView {...{ nodeId: openId, user: me, works, acts, crs, teams, isOrg, busy, setBusy, flash, patchAct, patchWork, store, onOpen: setOpenId, onRemark: setRemarkNode, goApprovals }} />}
         {tab === "myday" && <MyDay {...{ me, works, acts, busy, setBusy, flash, patchAct, store }} />}
         {tab === "team" && isOrg && <TeamView {...{ user: me, teams, store, works, acts, onOpen: (id) => { setTab("portfolio"); setOpenId(id); } }} />}
         {tab === "approvals" && isOrg && <Approvals {...{ crs, store, works, me, flash }} />}
       </div>
       {capture && <Capture {...{ me, teams, store, works, busy, setBusy, flash, onClose: () => setCapture(false), onOpen: (id) => { setCapture(false); setTab("portfolio"); setOpenId(id); } }} />}
-      {objModal && <QuickCreate {...{ me, parent: null, level: "objective", works, store, busy, setBusy, flash, onClose: () => setObjModal(false), onCreated: (id) => { setTab("portfolio"); setPortView("cards"); setOpenId(id); } }} />}
+      {objModal && <QuickCreate {...{ me, parent: null, level: "objective", works, store, busy, setBusy, flash, onClose: () => setObjModal(false), onCreated: (id) => { setTab("portfolio"); setPortView("scorecard"); setOpenId(id); } }} />}
       {nudgeOpen && <NudgeInbox {...{ remarks, me, onOpen: (id) => { setNudgeOpen(false); setTab("portfolio"); setOpenId(id); }, onClose: () => setNudgeOpen(false) }} />}
       {remarkNode && <RemarkModal {...{ node: remarkNode, works, acts, busy, setBusy, flash, onSubmit: addRemark, onClose: () => setRemarkNode(null) }} />}
     </div>
@@ -489,41 +493,13 @@ function Login({ onLogin }) {
 function Tile({ label, value, tone }) { return <div className="rounded-xl bg-white border border-slate-200 px-4 py-3"><div className="text-xs text-slate-400">{label}</div><div className={`mt-1 font-mono text-2xl font-medium ${tone || "text-slate-900"}`}>{value}</div></div>; }
 function Panel({ title, right, children }) { return <div className="rounded-xl border border-slate-200 bg-white p-4"><div className="mb-3 flex items-center justify-between"><div className="text-sm font-medium text-slate-700">{title}</div>{right}</div>{children}</div>; }
 
-function InitiativeCard({ row, isOrg, onOpen, onJump, goApprovals, reviewMode, onRemark }) {
-  const { w, m, st, rag, issue, childCount, blocked, crc } = row; const th = LEVEL_THEME[w.level] || LEVEL_THEME.activity;
-  return (
-    <div className={`overflow-hidden rounded-xl border bg-white ${reviewMode ? "border-violet-300 ring-1 ring-violet-200" : rag === "red" ? "border-rose-200" : "border-slate-200"}`}>
-      <div className={`h-1.5 ${th.bar}`} />
-      <div className="p-5">
-        <div className="flex items-start justify-between gap-3">
-          <button onClick={() => (reviewMode ? onRemark(w) : onOpen(w.id))} className="min-w-0 text-left">
-            <LevelChip level={w.level} />
-            <div className="mt-1.5 truncate text-base font-medium text-slate-900 hover:underline">{w.title}</div>
-            <div className="mt-1 flex items-center gap-1.5 text-xs text-slate-400"><Avatar id={w.ownerId} size={16} /> {uName(w.ownerId)} · {fnOf(w.ownerId)}</div>
-          </button>
-          <div className="flex shrink-0 flex-col items-end gap-1.5">
-            <StatusPill rag={rag} />
-            {w.result && <div className="text-right"><div className={`font-mono text-xl font-medium ${th.text}`}>{m.resultPct != null ? Math.round(m.resultPct) + "%" : "—"}</div><div className="text-xs text-slate-400">{w.result.current}/{w.result.target} {w.result.unit}</div></div>}
-          </div>
-        </div>
-        <div className="mt-4"><ProgressPair planning={m.planning} execution={m.execution} /></div>
-        <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
-          <span>{childCount} {CHILD_LABEL[w.level]} · {st.done}/{st.total} activities done{st.overdue > 0 ? ` · ${st.overdue} overdue` : ""}{blocked > 0 ? ` · ${blocked} blocked` : ""}</span>
-          {reviewMode ? <button onClick={() => onRemark(w)} className="inline-flex items-center gap-1 font-medium text-violet-600 hover:text-violet-800"><Pencil size={12} /> Remark &amp; update</button> : <button onClick={() => onOpen(w.id)} className="inline-flex items-center gap-1 font-medium text-slate-500 hover:text-slate-800">Open <ArrowRight size={12} /></button>}
-        </div>
-        {isOrg && crc > 0 && <button onClick={goApprovals} className="mt-3 inline-flex items-center gap-1 rounded-md bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-200"><ClipboardCheck size={12} /> {crc} approval{crc > 1 ? "s" : ""} to review <ArrowRight size={11} /></button>}
-        {issue && <button onClick={() => onJump(issue)} className="mt-3 flex w-full items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-left hover:bg-rose-100"><AlertTriangle size={14} className="shrink-0 text-rose-500" /><span className="min-w-0 flex-1 text-xs text-rose-800"><span className="font-medium">{issue.blocked ? "Blocked" : "Overdue"} task deep inside this {LEVEL_LABEL[w.level].toLowerCase()}:</span> {issue.title} — this is why it shows red.</span><span className="shrink-0 text-xs font-medium text-rose-700">Go to it <ArrowRight size={11} className="inline" /></span></button>}
-      </div>
-    </div>
-  );
-}
 
-function SufficiencyPanel({ rows }) {
+function SufficiencyPanel({ rows, title }) {
   const objs = rows.filter((r) => r.w.result);
   return (
-    <Panel title="Sufficiency & gap to target">
+    <Panel title={title || "Sufficiency & gap to target"}>
       <div className="space-y-3">
-        {objs.length === 0 && <div className="text-xs text-slate-400">No result-bearing objectives in scope.</div>}
+        {objs.length === 0 && <div className="text-xs text-slate-400">No result-bearing initiatives in scope.</div>}
         {objs.map(({ w, m, st }) => { const [lbl, tone] = sufficiency(m, st); const gap = Math.round((w.result.target - w.result.current) * 100) / 100;
           return (
             <div key={w.id} className="rounded-lg border border-slate-100 p-3">
@@ -541,6 +517,57 @@ function SufficiencyPanel({ rows }) {
   );
 }
 
+// Sufficiency/gap is only meaningful scoped to one objective at a time — a flat
+// cross-objective list reads as noise. Pick an objective (+ optional due-date
+// cutoff) to see just its initiatives.
+function SufficiencyByObjective({ works, acts, me }) {
+  const objectives = scopedObjectives(works, acts, me);
+  const [selId, setSelId] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const scopedActs = actsUpTo(acts, dueDate);
+  const objTitle = objectives.find((o) => o.id === selId)?.title;
+  const rows = selId ? works.filter((w) => w.level === "initiative" && w.parentId === selId).map((w) => ({ w, m: computeMeters(works, scopedActs, w.id), st: workStats(works, scopedActs, w.id) })) : [];
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <select value={selId} onChange={(e) => setSelId(e.target.value)} className={`${inputCls} max-w-xs`}>
+          <option value="">Pick an objective for sufficiency &amp; gap…</option>
+          {objectives.map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
+        </select>
+        {selId && <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={`${inputCls} w-40`} title="Optional — only count activities due by this date" />}
+        {selId && dueDate && <button onClick={() => setDueDate("")} className="text-xs text-slate-400 hover:text-slate-700">clear date</button>}
+      </div>
+      {!selId
+        ? <div className="rounded-xl border border-dashed border-slate-200 bg-white p-4 text-center text-xs text-slate-400">Pick an objective above to see sufficiency &amp; gap to target for its initiatives.</div>
+        : <SufficiencyPanel rows={rows} title={`Sufficiency & gap — ${objTitle}${dueDate ? ` (as of ${dueDate})` : ""}`} />}
+    </div>
+  );
+}
+
+// Works carry no target metric (only Initiatives do) — "gap" here is planning/
+// schedule readiness: which Works are behind or lack a deadline.
+function WorkReadinessPanel({ works, acts, scopeInitiativeIds, onOpen }) {
+  const rows = works.filter((w) => w.level === "work" && scopeInitiativeIds.has(w.parentId))
+    .map((w) => { const m = computeMeters(works, acts, w.id); const parent = works.find((p) => p.id === w.parentId); const daysLeft = w.deadline ? Math.round((parseISO(w.deadline) - TODAY) / MSD) : null; return { w, m, parent, daysLeft, rag: nodeRag(works, acts, w.id) }; })
+    .filter((r) => r.rag !== "green" || r.m.planning < 70)
+    .sort((a, b) => a.m.planning - b.m.planning)
+    .slice(0, 6);
+  return (
+    <Panel title="Work readiness — schedule & planning gap">
+      {rows.length === 0 && <div className="text-xs text-slate-400">All works are planned and on track.</div>}
+      <div className="space-y-2">{rows.map(({ w, m, parent, daysLeft, rag }) => (
+        <button key={w.id} onClick={() => onOpen(w.id)} className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-100 p-2.5 text-left hover:bg-slate-50">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-medium text-slate-800">{w.title}</div>
+            <div className="mt-0.5 truncate text-xs text-slate-400">{parent ? `under ${parent.title} · ` : ""}Plan {m.planning}% · Done {m.execution}%{daysLeft != null ? ` · ${daysLeft < 0 ? `${-daysLeft}d overdue` : `${daysLeft}d left`}` : " · no deadline set"}</div>
+          </div>
+          <StatusPill rag={rag} />
+        </button>
+      ))}</div>
+    </Panel>
+  );
+}
+
 function ByFunctionPanel({ initRows }) {
   const byFn = {};
   initRows.forEach((r) => { const f = fnOf(r.w.ownerId) || "—"; (byFn[f] = byFn[f] || []).push(r); });
@@ -553,29 +580,49 @@ function ByFunctionPanel({ initRows }) {
   );
 }
 
+// Groups flagged items under the nearest Initiative-or-Work ancestor instead
+// of a flat list, so "needs attention" reads with hierarchy context.
+function groupAncestor(works, workId) {
+  let cur = works.find((w) => w.id === workId); let g = 0;
+  while (cur && g++ < 12) { if (cur.level === "initiative" || cur.level === "work" || !cur.parentId) return cur; cur = works.find((w) => w.id === cur.parentId); }
+  return cur;
+}
 function AttentionPanel({ rows, works, acts, onOpen }) {
   const scope = new Set(rows.flatMap((r) => subtreeIds(works, r.w.id)));
-  const items = [];
-  acts.filter((a) => scope.has(a.workId) && isOverdue(a)).forEach((a) => items.push(["rose", Clock, a.title, "overdue " + fmtFull(parseISO(a.date)), a.workId]));
-  acts.filter((a) => scope.has(a.workId) && a.blocked && a.status !== "executed").forEach((a) => items.push(["rose", AlertTriangle, a.title, "blocked — needs help", a.workId]));
-  rows.filter((r) => r.m.stuck).forEach((r) => items.push(["amber", AlertTriangle, r.w.title, "stuck at " + r.m.stuck, r.w.id]));
-  acts.filter((a) => scope.has(a.workId) && a.unplanned && a.status !== "executed").forEach((a) => items.push(["amber", Plus, a.title, "unplanned — reshaped the plan", a.workId]));
-  const topOf = (wid) => { const w = works.find((x) => x.id === wid); return w && w.parentId ? w.parentId : wid; };
+  const groups = {};
+  const pushTo = (groupNode, tone, Icon, title, sub, wid) => { if (!groupNode) return; const g = (groups[groupNode.id] = groups[groupNode.id] || { node: groupNode, items: [] }); g.items.push({ tone, Icon, title, sub, wid }); };
+  acts.filter((a) => scope.has(a.workId) && isOverdue(a)).forEach((a) => pushTo(groupAncestor(works, a.workId), "rose", Clock, a.title, "overdue " + fmtFull(parseISO(a.date)), a.workId));
+  acts.filter((a) => scope.has(a.workId) && a.blocked && a.status !== "executed").forEach((a) => pushTo(groupAncestor(works, a.workId), "rose", AlertTriangle, a.title, "blocked — needs help", a.workId));
+  rows.filter((r) => r.m.stuck).forEach((r) => pushTo(r.w, "amber", AlertTriangle, r.w.title, "stuck at " + r.m.stuck, r.w.id));
+  acts.filter((a) => scope.has(a.workId) && a.unplanned && a.status !== "executed").forEach((a) => pushTo(groupAncestor(works, a.workId), "amber", Plus, a.title, "unplanned — reshaped the plan", a.workId));
+  const allGroups = Object.values(groups);
+  const shown = allGroups.slice(0, 5);
+  const totalItems = allGroups.reduce((s, g) => s + g.items.length, 0);
   return (
-    <Panel title="Needs attention" right={<span className="text-xs text-slate-400">{items.length}</span>}>
-      {items.length === 0 && <div className="text-xs text-slate-400">All clear.</div>}
-      <div className="space-y-1.5">{items.slice(0, 8).map((it, i) => { const [tone, Icon, t, sub, wid] = it;
-        return <button key={i} onClick={() => onOpen(wid)} className="flex w-full items-center gap-2 rounded-md border border-slate-100 px-3 py-1.5 text-left hover:bg-slate-50"><Icon size={13} className={tone === "rose" ? "text-rose-500" : "text-amber-500"} /><span className="min-w-0 flex-1 truncate text-sm text-slate-700">{t}</span><span className="shrink-0 text-xs text-slate-400">{sub}</span></button>;
-      })}</div>
+    <Panel title="Needs attention" right={<span className="text-xs text-slate-400">{totalItems}</span>}>
+      {shown.length === 0 && <div className="text-xs text-slate-400">All clear.</div>}
+      <div className="space-y-3">
+        {shown.map((g) => { const gt = LEVEL_THEME[g.node.level] || LEVEL_THEME.activity;
+          return (
+            <div key={g.node.id}>
+              <button onClick={() => onOpen(g.node.id)} className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900"><span className={`h-1.5 w-1.5 rounded-full ${gt.bar}`} /> {g.node.title}</button>
+              <div className="space-y-1">{g.items.slice(0, 3).map((it, i) => <button key={i} onClick={() => onOpen(it.wid)} className="flex w-full items-center gap-2 rounded-md border border-slate-100 px-3 py-1.5 text-left hover:bg-slate-50"><it.Icon size={13} className={it.tone === "rose" ? "text-rose-500" : "text-amber-500"} /><span className="min-w-0 flex-1 truncate text-sm text-slate-700">{it.title}</span><span className="shrink-0 text-xs text-slate-400">{it.sub}</span></button>)}</div>
+            </div>
+          );
+        })}
+        {allGroups.length > 5 && <div className="text-xs text-slate-400">+{allGroups.length - 5} more area{allGroups.length - 5 !== 1 ? "s" : ""} need attention.</div>}
+      </div>
     </Panel>
   );
 }
 
 function CapacityPanel({ users, acts }) {
   const cap = 20;
+  const [dueDate, setDueDate] = useState("");
+  const scopedActs = actsUpTo(acts, dueDate);
   return (
-    <Panel title="Team capacity (open work)">
-      <div className="space-y-2">{users.map((u) => { const h = loadOf(acts, u.id); const pct = Math.min(100, (h / cap) * 100); const over = h > cap * 0.8;
+    <Panel title="Team capacity (open work)" right={<input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-500" title="Optional — only count work due by this date" />}>
+      <div className="space-y-2">{users.map((u) => { const h = loadOf(scopedActs, u.id); const pct = Math.min(100, (h / cap) * 100); const over = h > cap * 0.8;
         return <div key={u.id} className="flex items-center gap-3"><span className="w-32 shrink-0 truncate text-sm text-slate-600">{u.name.split(" ")[0]} <span className="text-xs text-slate-400">· {u.fn}</span></span><div className="h-2 flex-1 rounded-full bg-slate-100 overflow-hidden"><div className={`h-full ${over ? "bg-rose-400" : "bg-emerald-400"}`} style={{ width: `${pct}%` }} /></div><span className="w-10 text-right font-mono text-xs text-slate-500">{h}h</span></div>;
       })}</div>
     </Panel>
@@ -593,64 +640,101 @@ function TeamSnapshot({ user, acts }) {
   );
 }
 
+/* ---------- Enterprise scorecard (cascading Objective -> Initiative -> Work -> Activity) ---------- */
+function ScorecardPanel({ label, total, view, setView, listItems, onSelectItem, onOpenItem, selectedId, statusRows, emptyLabel }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4">
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div><div className="font-mono text-2xl font-medium text-slate-900">{total}</div><div className="text-xs text-slate-400">{label}</div></div>
+        <div className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-slate-200 bg-white p-0.5">
+          {[["list", "List"], ["status", "Status"]].map(([k, l]) => <button key={k} onClick={() => setView(k)} className={`rounded px-2 py-1 text-xs font-medium ${view === k ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}>{l}</button>)}
+        </div>
+      </div>
+      {total === 0 ? <div className="py-3 text-center text-xs text-slate-400">{emptyLabel || "None in scope."}</div>
+        : view === "status" ? (
+          <div className="space-y-1.5">{statusRows.map((r) => <div key={r.label} className="flex items-center gap-2 text-xs"><span className={`h-2 w-2 rounded-full ${r.dot}`} /><span className="flex-1 text-slate-600">{r.label}</span><span className="font-mono text-slate-700">{r.count}</span></div>)}</div>
+        ) : (
+          <div className="max-h-48 space-y-1 overflow-y-auto">{listItems.map((it) => (
+            <div key={it.id} className={`flex items-center gap-1 rounded-md text-xs ${selectedId === it.id ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-50"}`}>
+              <button onClick={() => onSelectItem(it.id)} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${it.dot}`} /><span className="min-w-0 flex-1 truncate">{it.title}</span></button>
+              {onOpenItem && <button onClick={() => onOpenItem(it.id)} title="Open detail" className={`shrink-0 rounded p-1 mr-1 ${selectedId === it.id ? "text-slate-300 hover:text-white" : "text-slate-300 hover:text-slate-700"}`}><ArrowRight size={12} /></button>}
+            </div>
+          ))}</div>
+        )}
+    </div>
+  );
+}
+const STATUS_ROWS_LABELS = [["green", "On track"], ["amber", "At risk"], ["red", "Blocked"]];
+function EnterpriseScorecard({ works, acts, me, onOpen }) {
+  const [selObjective, setSelObjective] = useState(null);
+  const [selInitiative, setSelInitiative] = useState(null);
+  const [selWork, setSelWork] = useState(null);
+  const [views, setViews] = useState({ objective: "list", initiative: "list", work: "list", activity: "status" });
+  const setView = (lvl, v) => setViews((p) => ({ ...p, [lvl]: v }));
+  const dotFor = (w) => RAG[nodeRag(works, acts, w.id)][0];
+  const statusRowsFor = (items) => { const c = { green: 0, amber: 0, red: 0 }; items.forEach((w) => c[nodeRag(works, acts, w.id)]++); return STATUS_ROWS_LABELS.map(([k, l]) => ({ label: l, count: c[k], dot: RAG[k][0] })); };
+
+  const scopedInitiatives = scopeInitiatives(works, acts, me);
+  const objectives = scopedObjectives(works, acts, me);
+  const initiatives = selObjective ? scopedInitiatives.filter((i) => i.parentId === selObjective) : scopedInitiatives;
+  const worksAtLevel = works.filter((w) => w.level === "work" && (selInitiative ? w.parentId === selInitiative : initiatives.some((i) => i.id === w.parentId)));
+  const scopeRootForActs = selWork || selInitiative || selObjective;
+  const activityWorkIds = new Set(scopeRootForActs ? subtreeIds(works, scopeRootForActs) : initiatives.flatMap((i) => subtreeIds(works, i.id)));
+  const activities = acts.filter((a) => activityWorkIds.has(a.workId) && a.status !== "cancelled");
+  const actDot = (a) => (a.status === "executed" ? "bg-blue-500" : isOverdue(a) ? "bg-rose-500" : a.blocked ? "bg-rose-400" : "bg-slate-400");
+
+  const toggle = (setter, cur, id) => setter(cur === id ? null : id);
+  const selectObjective = (id) => { toggle(setSelObjective, selObjective, id); setSelInitiative(null); setSelWork(null); };
+  const selectInitiative = (id) => { toggle(setSelInitiative, selInitiative, id); setSelWork(null); };
+  const selectWork = (id) => toggle(setSelWork, selWork, id);
+
+  return (
+    <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <ScorecardPanel label="Objectives" total={objectives.length} view={views.objective} setView={(v) => setView("objective", v)} selectedId={selObjective} onSelectItem={selectObjective} onOpenItem={onOpen} listItems={objectives.map((o) => ({ id: o.id, title: o.title, dot: dotFor(o) }))} statusRows={statusRowsFor(objectives)} emptyLabel="No objectives in scope." />
+      <ScorecardPanel label="Initiatives" total={initiatives.length} view={views.initiative} setView={(v) => setView("initiative", v)} selectedId={selInitiative} onSelectItem={selectInitiative} onOpenItem={onOpen} listItems={initiatives.map((o) => ({ id: o.id, title: o.title, dot: dotFor(o) }))} statusRows={statusRowsFor(initiatives)} emptyLabel={selObjective ? "No initiatives under this objective." : "No initiatives in scope."} />
+      <ScorecardPanel label="Work" total={worksAtLevel.length} view={views.work} setView={(v) => setView("work", v)} selectedId={selWork} onSelectItem={selectWork} onOpenItem={onOpen} listItems={worksAtLevel.map((o) => ({ id: o.id, title: o.title, dot: dotFor(o) }))} statusRows={statusRowsFor(worksAtLevel)} emptyLabel="No work items here yet." />
+      <ScorecardPanel label="Activities" total={activities.length} view={views.activity} setView={(v) => setView("activity", v)} selectedId={null} onSelectItem={(id) => { const a = activities.find((x) => x.id === id); if (a) onOpen(a.workId); }} listItems={activities.slice(0, 8).map((a) => ({ id: a.id, title: a.title, dot: actDot(a) }))} statusRows={[{ label: "Done", count: activities.filter((a) => a.status === "executed").length, dot: "bg-blue-500" }, { label: "Overdue", count: activities.filter(isOverdue).length, dot: "bg-rose-500" }, { label: "Blocked", count: activities.filter((a) => a.blocked && a.status !== "executed").length, dot: "bg-rose-400" }, { label: "Open", count: activities.filter((a) => a.status !== "executed").length, dot: "bg-slate-400" }]} emptyLabel="No activities here yet." />
+    </div>
+  );
+}
+
 function Portfolio({ works, acts, crs, me, isOrg, onOpen, goApprovals, view, setView, reviewMode, setReviewMode, onRemark }) {
   const roots = homeNodes(works, acts, me);
   const rows = roots.map((w) => { const m = computeMeters(works, acts, w.id); const st = workStats(works, acts, w.id); const att = attentionCount(works, acts, w.id); return { w, m, st, rag: nodeRag(works, acts, w.id), issue: deepestIssue(works, acts, w.id), childCount: works.filter((x) => x.parentId === w.id).length, blocked: att.blocked, crc: crs.filter((c) => c.workId === w.id && c.status === "pending").length }; });
   return (
     <div>
-      {reviewMode && isOrg && <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-800"><span className="flex items-center gap-1.5"><Pencil size={13} /> Review &amp; update mode — {view === "tree" ? "click any card in the tree" : "use the Remark button on any card"} to leave a remark, re-assign, or shift dates. Owners get nudged.</span><button onClick={() => setReviewMode(false)} className="rounded-md border border-violet-200 bg-white px-2 py-1 font-medium text-violet-700 hover:bg-violet-100">Exit</button></div>}
-      <div className="mb-4 flex items-center justify-end">
+      {reviewMode && isOrg && <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-800"><span className="flex items-center gap-1.5"><Pencil size={13} /> Review &amp; update mode — {view === "tree" ? "click any card in the tree" : "switch to Tree view and click any card"} to leave a remark, re-assign, or shift dates. Owners get nudged.</span><button onClick={() => setReviewMode(false)} className="rounded-md border border-violet-200 bg-white px-2 py-1 font-medium text-violet-700 hover:bg-violet-100">Exit</button></div>}
+      {me.level !== "member" && <div className="mb-4 flex items-center justify-end">
         <div className="inline-flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white p-0.5">
-          <button onClick={() => setView("cards")} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium ${view === "cards" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}><LayoutGrid size={13} /> Cards</button>
+          <button onClick={() => setView("scorecard")} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium ${view === "tree" ? "text-slate-500 hover:bg-slate-50" : "bg-slate-900 text-white"}`}><LayoutGrid size={13} /> Scorecard</button>
           <button onClick={() => setView("tree")} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium ${view === "tree" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}><ChevronRight size={13} className="rotate-90" /> Tree</button>
         </div>
-      </div>
-      {view === "tree" ? <BracketTree roots={roots} works={works} acts={acts} onOpen={onOpen} reviewMode={reviewMode} setReviewMode={setReviewMode} onRemark={onRemark} />
+      </div>}
+      {view === "tree" && me.level !== "member" ? <BracketTree roots={roots} works={works} acts={acts} onOpen={onOpen} reviewMode={reviewMode} setReviewMode={setReviewMode} onRemark={onRemark} userId={me.id} />
         : me.level === "member" ? <MyWork {...{ me, works, acts, rows, onOpen }} />
         : <LeaderDashboard {...{ me, works, acts, crs, rows, isOrg, onOpen, goApprovals, reviewMode, onRemark }} />}
     </div>
   );
 }
 
-function LeaderDashboard({ me, works, acts, crs, rows, isOrg, onOpen, goApprovals, reviewMode, onRemark }) {
-  const [filter, setFilter] = useState("all");
+function LeaderDashboard({ me, works, acts, rows, onOpen }) {
   const md = me.level === "md";
-  const homeLabel = md ? "Objectives" : "Initiatives";
   const initRows = scopeInitiatives(works, acts, me).map((w) => { const m = computeMeters(works, acts, w.id); const st = workStats(works, acts, w.id); return { w, m, st, rag: nodeRag(works, acts, w.id) }; });
-  const scopeIds = new Set(rows.flatMap((r) => subtreeIds(works, r.w.id)));
-  const pending = crs.filter((c) => c.status === "pending" && scopeIds.has(c.workId)).length;
-  const overdueTotal = rows.reduce((s, r) => s + r.st.overdue, 0);
-  const att = initRows.filter((r) => r.m.resultPct != null); const avg = att.length ? Math.round(att.reduce((s, r) => s + r.m.resultPct, 0) / att.length) : "—";
+  const scopeInitiativeIds = new Set(initRows.map((r) => r.w.id));
   const capUsers = md ? USERS.filter((u) => u.level !== "md") : USERS.filter((u) => u.reports_to === me.id);
-  const shown = rows.filter((r) => filter === "all" ? true : r.rag !== "green");
-  const onJump = (issue) => onOpen(issue.workId);
   return (
     <div>
       <div className="mb-1 text-lg font-medium text-slate-900">{md ? "Enterprise scorecard" : `Your function — ${me.fn}`}</div>
-      <div className="mb-2 text-xs text-slate-400">{md ? "Your objectives, rolled up from every level below. A red flag means something is broken deeper down — click it to jump to the cause." : "Your initiatives, scoped to your function. Drill in to walk the tree down to activities."}</div>
+      <div className="mb-2 text-xs text-slate-400">{md ? "Every objective, initiative, work and activity — pick one to drill into what's beneath it." : "Your initiatives, scoped to your function. Pick one to drill into work and activities."}</div>
       <div className="mb-4"><LevelLegend /></div>
-      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <Tile label={homeLabel} value={rows.length} />
-        <Tile label="On track" value={rows.filter((r) => r.rag === "green").length} tone="text-emerald-600" />
-        <Tile label="At risk / behind" value={rows.filter((r) => r.rag !== "green").length} tone="text-amber-600" />
-        <Tile label="Avg result" value={typeof avg === "number" ? avg + "%" : avg} tone="text-violet-700" />
-        <Tile label="Overdue below" value={overdueTotal} tone={overdueTotal ? "text-rose-600" : undefined} />
-        <Tile label="Approvals" value={pending} tone={pending ? "text-rose-600" : undefined} />
-      </div>
+      <EnterpriseScorecard works={works} acts={acts} me={me} onOpen={onOpen} />
       <div className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <SufficiencyPanel rows={initRows} />
-        <AttentionPanel rows={rows} works={works} acts={acts} onOpen={onOpen} />
         {md ? <ByFunctionPanel initRows={initRows} /> : <TeamSnapshot user={me} acts={acts} />}
         <CapacityPanel users={capUsers} acts={acts} />
       </div>
-      <div className="mb-3 flex items-center justify-between">
-        <div className="text-sm font-medium text-slate-700">{homeLabel}</div>
-        <div className="flex gap-1">{[["all", "All"], ["risk", "Needs attention"]].map(([k, l]) => <button key={k} onClick={() => setFilter(k)} className={`rounded-md px-3 py-1.5 text-xs font-medium ${filter === k ? "bg-slate-900 text-white" : "border border-slate-200 text-slate-500 hover:bg-slate-50"}`}>{l}</button>)}</div>
-      </div>
-      <div className="space-y-4">
-        {shown.map((row) => <InitiativeCard key={row.w.id} row={row} isOrg={isOrg} onOpen={onOpen} onJump={onJump} goApprovals={goApprovals} reviewMode={reviewMode} onRemark={onRemark} />)}
-        {shown.length === 0 && <div className="rounded-xl border border-dashed border-slate-200 bg-white p-8 text-center text-sm text-slate-400">Nothing needs attention.</div>}
-      </div>
+      <div className="mb-5"><SufficiencyByObjective works={works} acts={acts} me={me} /></div>
+      <div className="mb-5"><WorkReadinessPanel works={works} acts={acts} scopeInitiativeIds={scopeInitiativeIds} onOpen={onOpen} /></div>
+      <AttentionPanel rows={rows} works={works} acts={acts} onOpen={onOpen} />
     </div>
   );
 }
@@ -692,8 +776,8 @@ function MyWork({ me, works, acts, rows, onOpen }) {
 }
 
 /* ---------- Work detail ---------- */
-function BracketTree({ roots, works, acts, onOpen, reviewMode, setReviewMode, onRemark }) {
-  const COL = 258, CARDW = 216, CARDH = 76, ROW = 98;
+function BracketTree({ roots, works, acts, onOpen, reviewMode, setReviewMode, onRemark, userId }) {
+  const CARDW = 216, CARDH = 76, ROWGAP = 140, COLGAP = 248;
   const rootIds = roots.map((r) => r.id);
   const childIds = (id) => works.filter((w) => w.parentId === id).map((w) => w.id); // tree stops at sub-work
   const allWorkIds = [...new Set(rootIds.flatMap((id) => subtreeIds(works, id).filter((x) => works.find((w) => w.id === x))))];
@@ -701,46 +785,86 @@ function BracketTree({ roots, works, acts, onOpen, reviewMode, setReviewMode, on
   const [expanded, setExpanded] = useState(init);
   const toggle = (id) => setExpanded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
-  // ----- layout pass: each visible node gets a column (depth) and a y-slot -----
+  // Personal manual layout (drag-to-rearrange), saved per user — sparse, only
+  // nodes the user actually dragged get an entry; everything else auto-layouts.
+  const [customPos, setCustomPos] = useState({});
+  const [rearrange, setRearrange] = useState(false);
+  const dragRef = useRef(null);
+  const justDragged = useRef(false);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`cadence:treeLayout:${userId}`);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const valid = {};
+      Object.entries(parsed.positions || {}).forEach(([id, p]) => { if (works.some((w) => w.id === id) && Number.isFinite(p?.x) && Number.isFinite(p?.y)) valid[id] = p; });
+      setCustomPos(valid);
+    } catch { /* ignore corrupt/missing data */ }
+  }, [userId]);
+  const saveLayout = () => localStorage.setItem(`cadence:treeLayout:${userId}`, JSON.stringify({ v: 1, positions: customPos }));
+  const resetLayout = () => { setCustomPos({}); localStorage.removeItem(`cadence:treeLayout:${userId}`); };
+
+  // ----- layout pass: each visible node gets a row (depth) and an x-slot -----
   const nodes = {}; let leaf = 0; let maxDepth = 0;
   const place = (id, depth) => {
     maxDepth = Math.max(maxDepth, depth);
     const kids = expanded.has(id) ? childIds(id) : [];
-    let y;
-    if (kids.length === 0) { y = leaf * ROW; leaf++; }
-    else { const ys = kids.map((k) => place(k, depth + 1)); y = (ys[0] + ys[ys.length - 1]) / 2; }
-    nodes[id] = { depth, y };
-    return y;
+    let x;
+    if (kids.length === 0) { x = leaf * COLGAP; leaf++; }
+    else { const xs = kids.map((k) => place(k, depth + 1)); x = (xs[0] + xs[xs.length - 1]) / 2; }
+    nodes[id] = { depth, x };
+    return x;
   };
   rootIds.forEach((r) => place(r, 0));
+  const posFor = (id) => (customPos[id] ? customPos[id] : { x: nodes[id].x, y: nodes[id].depth * ROWGAP });
   const edges = [];
   Object.keys(nodes).forEach((id) => { if (!expanded.has(id)) return; childIds(id).forEach((cid) => { if (nodes[cid]) edges.push([id, cid]); }); });
-  const W = maxDepth * COL + CARDW + 24; const H = Math.max(leaf, 1) * ROW + 8;
+  const autoW = Math.max(leaf, 1) * COLGAP + CARDW + 24;
+  const autoH = maxDepth * ROWGAP + CARDH + 24;
+  const customXs = Object.values(customPos).map((p) => p.x + CARDW + 24);
+  const customYs = Object.values(customPos).map((p) => p.y + CARDH + 24);
+  const W = Math.max(autoW, ...customXs, 0);
+  const H = Math.max(autoH, ...customYs, 0);
 
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <LevelLegend />
-        <div className="flex gap-1"><button onClick={() => setExpanded(new Set(allWorkIds))} className={btnLight}>Expand all</button><button onClick={() => setExpanded(new Set(rootIds))} className={btnLight}>Collapse</button></div>
+        <div className="flex flex-wrap gap-1">
+          <button onClick={() => setExpanded(new Set(allWorkIds))} className={btnLight}>Expand all</button>
+          <button onClick={() => setExpanded(new Set(rootIds))} className={btnLight}>Collapse</button>
+          <button onClick={() => setRearrange((r) => !r)} className={rearrange ? "inline-flex items-center gap-1.5 rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white" : btnLight}>{rearrange ? "Done rearranging" : "Rearrange"}</button>
+          {rearrange && <button onClick={saveLayout} className={btnLight}>Save layout</button>}
+          {rearrange && <button onClick={resetLayout} className={btnLight}>Undo / reset</button>}
+        </div>
       </div>
       {reviewMode && <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-800"><span className="flex items-center gap-1.5"><Pencil size={13} /> Review mode — click any initiative, work or sub-work to leave a remark &amp; nudge its owners.</span><button onClick={() => setReviewMode(false)} className="rounded-md border border-violet-200 bg-white px-2 py-1 font-medium text-violet-700 hover:bg-violet-100">Exit</button></div>}
-      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-slate-50 p-4">
+      {rearrange && <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">Drag any card to arrange the tree your way, then "Save layout" to keep it — "Undo / reset" reverts everyone's default auto-layout.</div>}
+      <div className="overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-4">
         <div className="relative" style={{ width: W, height: H }}>
           <svg className="absolute inset-0" width={W} height={H}>
-            {edges.map(([p, c], i) => { const pn = nodes[p], cn = nodes[c]; const px = pn.depth * COL + CARDW, py = pn.y + CARDH / 2, cx = cn.depth * COL, cy = cn.y + CARDH / 2; const mx = px + (cx - px) / 2; const red = nodeRag(works, acts, c) === "red"; return <path key={i} d={`M ${px} ${py} C ${mx} ${py}, ${mx} ${cy}, ${cx} ${cy}`} fill="none" stroke={red ? "#fb7185" : "#cbd5e1"} strokeWidth={red ? 2 : 1.5} />; })}
+            {edges.map(([p, c], i) => { const pn = posFor(p), cn = posFor(c); const px = pn.x + CARDW / 2, py = pn.y + CARDH, cx = cn.x + CARDW / 2, cy = cn.y; const my = py + (cy - py) / 2; const red = nodeRag(works, acts, c) === "red"; return <path key={i} d={`M ${px} ${py} C ${px} ${my}, ${cx} ${my}, ${cx} ${cy}`} fill="none" stroke={red ? "#fb7185" : "#cbd5e1"} strokeWidth={red ? 2 : 1.5} />; })}
           </svg>
-          {Object.entries(nodes).map(([id, n]) => {
-            const left = n.depth * COL, top = n.y;
+          {Object.keys(nodes).map((id) => {
+            const { x: left, y: top } = posFor(id);
             const w = works.find((x) => x.id === id); const th = LEVEL_THEME[w.level]; const rag = nodeRag(works, acts, id); const catt = attentionCount(works, acts, id); const m = computeMeters(works, acts, id); const hasKids = childIds(id).length > 0; const open = expanded.has(id); const canRemark = reviewMode && w.level !== "objective";
             return (
-              <div key={id} style={{ position: "absolute", left, top, width: CARDW, height: CARDH }} onClick={() => { if (canRemark) onRemark(w); else if (hasKids) toggle(id); }} className={`relative overflow-hidden rounded-lg border bg-white ${rag === "red" ? "border-rose-200 ring-1 ring-rose-100" : "border-slate-200"} ${canRemark ? "cursor-pointer ring-1 ring-violet-200 hover:ring-violet-400" : hasKids ? "cursor-pointer hover:shadow-sm" : ""}`}>
+              <div
+                key={id}
+                style={{ position: "absolute", left, top, width: CARDW, height: CARDH, touchAction: rearrange ? "none" : undefined }}
+                onPointerDown={(e) => { if (!rearrange) return; e.currentTarget.setPointerCapture(e.pointerId); const p = posFor(id); dragRef.current = { id, startPx: e.clientX, startPy: e.clientY, origX: p.x, origY: p.y, moved: false }; }}
+                onPointerMove={(e) => { const d = dragRef.current; if (!d || d.id !== id) return; const dx = e.clientX - d.startPx, dy = e.clientY - d.startPy; if (Math.abs(dx) > 3 || Math.abs(dy) > 3) d.moved = true; if (!d.moved) return; setCustomPos((prev) => ({ ...prev, [id]: { x: Math.max(0, d.origX + dx), y: Math.max(0, d.origY + dy) } })); }}
+                onPointerUp={() => { const d = dragRef.current; dragRef.current = null; if (d && d.id === id && d.moved) justDragged.current = true; }}
+                onClick={() => { if (rearrange && justDragged.current) { justDragged.current = false; return; } if (canRemark) onRemark(w); else if (hasKids) toggle(id); }}
+                className={`relative overflow-hidden rounded-lg border bg-white ${rag === "red" ? "border-rose-200 ring-1 ring-rose-100" : "border-slate-200"} ${rearrange ? "cursor-grab active:cursor-grabbing" : canRemark ? "cursor-pointer ring-1 ring-violet-200 hover:ring-violet-400" : hasKids ? "cursor-pointer hover:shadow-sm" : ""}`}
+              >
                 <span className={`absolute inset-y-0 left-0 w-1 ${th.bar}`} />
                 <div className="flex h-full flex-col justify-center gap-1 pl-3 pr-2">
                   <div className="flex items-center gap-1.5">
                     <span className={`h-2 w-2 shrink-0 rounded-full ${th.bar}`} />
                     <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-800">{w.title}</span>
                     {w.recurring && <span className="shrink-0 rounded bg-violet-100 px-1 text-xs font-medium text-violet-700" title="recurring">↻ {w.recurring.cadence}</span>}
-                    {hasKids && <span onClick={(e) => { e.stopPropagation(); toggle(id); }} className="shrink-0 cursor-pointer rounded p-0.5 hover:bg-slate-100"><ChevronRight size={13} className={`text-slate-400 transition-transform ${open ? "rotate-90" : ""}`} /></span>}
+                    {hasKids && !rearrange && <span onClick={(e) => { e.stopPropagation(); toggle(id); }} className="shrink-0 cursor-pointer rounded p-0.5 hover:bg-slate-100"><ChevronRight size={13} className={`text-slate-400 transition-transform ${open ? "rotate-90" : ""}`} /></span>}
                   </div>
                   <div className="flex items-center gap-1 text-xs text-slate-500"><Avatar id={w.ownerId} size={14} /><span className="min-w-0 truncate">{uFirst(w.ownerId)}</span>{w.result && <span className={`shrink-0 font-mono ${th.text}`}>· {m.resultPct != null ? Math.round(m.resultPct) + "%" : "—"}</span>}</div>
                   <div className="flex items-center gap-1.5 text-xs">
@@ -748,7 +872,7 @@ function BracketTree({ roots, works, acts, onOpen, reviewMode, setReviewMode, on
                     <span className="text-amber-600">Done {m.execution}%</span>
                     {catt.blocked > 0 && <span className="text-rose-600">· {catt.blocked} blk</span>}
                     <span className={`ml-auto h-2 w-2 shrink-0 rounded-full ${RAG[rag][0]}`} title={RAG[rag][3]} />
-                    <button onClick={(e) => { e.stopPropagation(); onOpen(id); }} className="shrink-0 rounded p-0.5 text-slate-300 hover:text-slate-700" title="Open detail"><ArrowRight size={12} /></button>
+                    {!rearrange && <button onClick={(e) => { e.stopPropagation(); onOpen(id); }} className="shrink-0 rounded p-0.5 text-slate-300 hover:text-slate-700" title="Open detail"><ArrowRight size={12} /></button>}
                   </div>
                 </div>
               </div>
@@ -756,17 +880,19 @@ function BracketTree({ roots, works, acts, onOpen, reviewMode, setReviewMode, on
           })}
         </div>
       </div>
-      <div className="mt-2 px-1 text-xs text-slate-400">Shows Objective → Initiative → Work → Sub-work. Click a card to branch it out · ↻ = recurring work · the arrow opens full detail · scroll sideways for deep branches.</div>
+      <div className="mt-2 px-1 text-xs text-slate-400">Shows Objective → Initiative → Work → Sub-work, top to bottom. Click a card to branch it out · ↻ = recurring work · the arrow opens full detail · scroll for deep or wide branches.</div>
     </div>
   );
 }
 
-function NodeView({ nodeId, user, works, acts, crs, isOrg, busy, setBusy, flash, patchAct, patchWork, store, onOpen, onRemark, goApprovals }) {
+function NodeView({ nodeId, user, works, acts, crs, teams, isOrg, busy, setBusy, flash, patchAct, patchWork, store, onOpen, onRemark, goApprovals }) {
   const node = works.find((w) => w.id === nodeId);
   const [insight, setInsight] = useState(null);
   const [modify, setModify] = useState(false); const [addUn, setAddUn] = useState(false); const [deliv, setDeliv] = useState(null); const [edit, setEdit] = useState(null); const [confirmDel, setConfirmDel] = useState(null); const [addChild, setAddChild] = useState(false); const [suggest, setSuggest] = useState(null);
   if (!node) return <button onClick={() => onOpen(null)} className="text-sm text-slate-500">← Portfolio</button>;
   const childLevel = CHILD_LEVEL[node.level]; const childLabel = childLevel === "activity" ? "task" : (LEVEL_LABEL[childLevel] || "").toLowerCase();
+  const team = node.level === "initiative" && node.teamId ? (teams || []).find((t) => t.id === node.teamId) : null;
+  const teamLead = team ? (team.memberIds.includes(node.ownerId) ? node.ownerId : team.memberIds[0]) : null;
   const canCreate = childLevel && (isOrg || node.ownerId === user.id || (childLevel === "activity" && user.level === "member"));
   const canRemark = isOrg || node.ownerId === user.id;
   const m = computeMeters(works, acts, node.id); const st = workStats(works, acts, node.id);
@@ -797,6 +923,109 @@ function NodeView({ nodeId, user, works, acts, crs, isOrg, busy, setBusy, flash,
     store.patchActs(up); flash(`Auto-assigned ${un.length} activities, balanced by load.`);
   };
 
+  const closeResults = () => { setInsight(null); setSuggest(null); };
+  const toolButtons = node.level === "objective" ? (
+    <>
+      <button onClick={doSuggest} disabled={!!busy} title="Suggest initiatives" className={btnLight}>{busy === "suggest" ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}</button>
+      <button onClick={doInsight} disabled={!!busy} title="Where does this stand" className={btnLight}>{busy === "insight" ? <Loader2 size={14} className="animate-spin" /> : <Gauge size={14} />}</button>
+    </>
+  ) : (
+    <>
+      <button onClick={autoAssign} disabled={!!busy} title="Auto-assign" className={btnLight}><Wand2 size={14} /></button>
+      <button onClick={expand} disabled={!!busy} title="Fill missing" className={btnLight}>{busy === "expand" ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}</button>
+      <button onClick={doInsight} disabled={!!busy} title="Where do I stand" className={btnLight}>{busy === "insight" ? <Loader2 size={14} className="animate-spin" /> : <Gauge size={14} />}</button>
+      <button onClick={() => setModify(true)} disabled={!!busy} title="Modify plan" className={btnLight}><Pencil size={14} /></button>
+      <button onClick={() => setAddUn(true)} disabled={!!busy} title="Unplanned activity" className={btnLight}><Plus size={14} /></button>
+      {(node.level === "work" || node.level === "subwork") && <button onClick={() => setDeliv(node)} title="Deliverable" className={btnLight}>{node.deliverable ? <Star size={14} className="text-amber-500" /> : <FileText size={14} />}</button>}
+    </>
+  );
+  const resultsPanel = (insight || suggest) && (
+    <div className="mt-4 rounded-lg border border-violet-200 bg-violet-50 p-3">
+      <div className="mb-1 flex items-center justify-between"><span className="flex items-center gap-1.5 text-xs font-medium text-violet-800"><Sparkles size={13} /> AI</span><button onClick={closeResults} className="text-violet-400 hover:text-violet-700"><X size={13} /></button></div>
+      {insight && <div className="space-y-1 text-sm"><p className="text-slate-700">{insight.read}</p><p className="text-violet-800"><span className="font-medium">Next: </span>{insight.action}</p></div>}
+      {suggest && <div className="space-y-1">{suggest.length === 0 && <div className="text-sm text-slate-500">No new suggestions.</div>}{suggest.map((s, i) => <div key={i} className="flex items-center gap-2 rounded-md border border-violet-100 bg-white px-3 py-1.5 text-sm"><span className="min-w-0 flex-1 truncate text-slate-700">{s.title}</span><Chip tone="blue">{s.type}</Chip><button onClick={() => addSuggested(s)} className="shrink-0 rounded bg-slate-900 px-2 py-1 text-xs font-medium text-white hover:bg-slate-700">Add</button></div>)}</div>}
+    </div>
+  );
+  const headerBlock = (
+    <div className="p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2"><LevelChip level={node.level} />{node.recurring && <Chip tone="violet">↻ {node.recurring.cadence}</Chip>}{node.scope && <Chip tone={node.scope === "group" ? "blue" : "slate"}>{node.scope === "group" ? "group" : "individual"}</Chip>}</div>
+          <h2 className="mt-1.5 text-lg font-medium text-slate-900">{node.title}</h2>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
+            {team ? <><Chip tone="blue">{team.name}</Chip><span>lead {uName(teamLead)}</span></> : <><Avatar id={node.ownerId} size={18} /> Owner {uName(node.ownerId)}</>}
+            {node.deadline && <span className="inline-flex items-center gap-1"><Target size={12} /> deadline {fmtFull(parseISO(node.deadline))}</span>}
+            {st.nextDue && <span className="inline-flex items-center gap-1"><CalendarClock size={12} /> next {fmtFull(parseISO(st.nextDue))}</span>}
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          {isOrg && toolButtons}
+          {canRemark && <button onClick={() => onRemark(node)} title="Remark & update" className="inline-flex items-center gap-1 rounded-md border border-violet-200 bg-white px-2 py-2 text-xs font-medium text-violet-700 hover:bg-violet-50"><Pencil size={12} /></button>}
+          <StatusPill rag={rag} />
+        </div>
+      </div>
+      <div className="mt-4 max-w-md"><ProgressPair planning={m.planning} execution={m.execution} size="lg" /></div>
+      <div className="mt-3 text-xs text-slate-500">{!leaf ? `${children.length} ${CHILD_LABEL[node.level]} inside · ` : ""}{st.done}/{st.total} activities done{st.overdue > 0 ? ` · ${st.overdue} overdue` : ""}</div>
+      {resultsPanel}
+    </div>
+  );
+  const insideDivider = (
+    <div className="mb-3 mt-2 flex items-center gap-2">
+      <span className={`h-2.5 w-2.5 rounded-full ${leaf ? LEVEL_THEME.activity.bar : LEVEL_THEME[CHILD_LEVEL[node.level]].bar}`} />
+      <span className="text-sm font-medium text-slate-700">Inside — {leaf ? `${nodeActs.length} ${nodeActs.length === 1 ? "activity" : "activities"}` : `${children.length} ${CHILD_LABEL[node.level]}`}</span>
+      <span className="hidden text-xs text-slate-400 sm:inline">{leaf ? "the actual tasks to execute" : "click any to drill in one level"}</span>
+      <div className="h-px flex-1 bg-slate-200" />
+      {canCreate && <button onClick={() => setAddChild(true)} className={btnLight}><Plus size={14} /> Add {childLabel}</button>}
+    </div>
+  );
+  const childrenGrid = (
+    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+      {children.map((c) => {
+        const ct = LEVEL_THEME[c.level]; const cm = computeMeters(works, acts, c.id); const cst = workStats(works, acts, c.id); const crag = nodeRag(works, acts, c.id); const cissue = deepestIssue(works, acts, c.id); const grand = works.filter((x) => x.parentId === c.id).length;
+        return (
+          <div key={c.id} className={`overflow-hidden rounded-xl border bg-white ${crag === "red" ? "border-rose-200" : "border-slate-200"}`}>
+            <div className={`h-1 ${ct.bar}`} />
+            <div className="p-4">
+              <div className="flex items-start justify-between gap-2">
+                <button onClick={() => onOpen(c.id)} className="min-w-0 text-left">
+                  <LevelChip level={c.level} />
+                  <div className="mt-1 truncate text-sm font-medium text-slate-800 hover:underline">{c.title}</div>
+                  <div className="mt-0.5 flex items-center gap-1 text-xs text-slate-400"><Avatar id={c.ownerId} size={14} /> {uFirst(c.ownerId)}{c.result && <span> · {cm.resultPct != null ? Math.round(cm.resultPct) + "%" : "—"} result</span>}</div>
+                </button>
+                <StatusPill rag={crag} />
+              </div>
+              <div className="mt-3"><ProgressPair planning={cm.planning} execution={cm.execution} /></div>
+              <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
+                <span>{grand || cst.total} {grand ? CHILD_LABEL[c.level] : "activities"} · {cst.done}/{cst.total} done{cst.overdue > 0 ? ` · ${cst.overdue} overdue` : ""}</span>
+                <button onClick={() => onOpen(c.id)} className="inline-flex items-center gap-1 font-medium text-slate-500 hover:text-slate-800">Open <ArrowRight size={12} /></button>
+              </div>
+              {cissue && <button onClick={() => onOpen(cissue.workId)} className="mt-2 flex w-full items-center gap-1.5 rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-left text-xs text-rose-800 hover:bg-rose-100"><AlertTriangle size={12} className="shrink-0 text-rose-500" /><span className="min-w-0 flex-1 truncate">{cissue.blocked ? "Blocked" : "Overdue"}: {cissue.title}</span><ArrowRight size={11} className="shrink-0" /></button>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+  const isObjectiveWithChildren = node.level === "objective" && !leaf;
+  const alertsStack = (
+    <div className="space-y-4">
+      {(att.blocked + att.overdue) > 0 && issue && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0 text-rose-500" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-rose-800">Heads-up — {att.blocked > 0 ? `${att.blocked} blocked` : ""}{att.blocked > 0 && att.overdue > 0 ? " and " : ""}{att.overdue > 0 ? `${att.overdue} overdue` : ""} deeper down</div>
+              <div className="mt-0.5 text-xs text-rose-700">That's why this {LEVEL_LABEL[node.level].toLowerCase()} shows red. Root cause: <span className="font-medium">{issue.title}</span> — {issue.blocked ? "a task that's blocked (someone can't move forward until it's cleared)." : "a task past its due date."}</div>
+              {issue.workId !== node.id && <button onClick={() => onOpen(issue.workId)} className="mt-2 inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100">Go to the cause <ArrowRight size={12} /></button>}
+            </div>
+          </div>
+        </div>
+      )}
+      {node.result && <ResultCard work={node} m={m} isOrg={isOrg} patchWork={patchWork} />}
+      {isOrg && myCRs.length > 0 && <button onClick={goApprovals} className="flex w-full items-center justify-between rounded-xl border border-amber-200 bg-amber-50 p-4 text-left hover:bg-amber-100"><div><div className="text-sm font-medium text-amber-800">{myCRs.length} plan change{myCRs.length > 1 ? "s" : ""} awaiting your approval</div><div className="text-xs text-amber-700">Proposed by the team</div></div><span className="inline-flex items-center gap-1 rounded-md bg-white px-3 py-1.5 text-sm font-medium text-amber-800"><ClipboardCheck size={14} /> Review <ArrowRight size={13} /></span></button>}
+    </div>
+  );
+
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center gap-1.5 text-sm">
@@ -804,103 +1033,17 @@ function NodeView({ nodeId, user, works, acts, crs, isOrg, busy, setBusy, flash,
         {path.map((n, i) => { const t = LEVEL_THEME[n.level]; const last = i === path.length - 1; return <span key={n.id} className="flex items-center gap-1.5"><ChevronRight size={14} className="text-slate-300" /><span className={`h-2 w-2 rounded-full ${t.bar}`} />{last ? <span className="font-medium text-slate-800">{n.title}</span> : <button onClick={() => onOpen(n.id)} className="max-w-xs truncate text-slate-500 hover:text-slate-800">{n.title}</button>}</span>; })}
       </div>
 
-      {/* ---- SECTION A: the level you're standing on ---- */}
-      <div className={`overflow-hidden rounded-xl border ${th.ring} bg-white`}>
-        <div className={`flex items-center justify-between gap-3 ${th.soft} px-5 py-3`}>
-          <div className="flex items-center gap-2"><LevelChip level={node.level} />{node.recurring && <Chip tone="violet">↻ {node.recurring.cadence}</Chip>}{node.scope && <Chip tone={node.scope === "group" ? "blue" : "slate"}>{node.scope === "group" ? "group" : "individual"}</Chip>}</div>
-          <div className="flex items-center gap-2">{canRemark && <button onClick={() => onRemark(node)} className="inline-flex items-center gap-1 rounded-md border border-violet-200 bg-white px-2.5 py-1 text-xs font-medium text-violet-700 hover:bg-violet-50"><Pencil size={12} /> Remark &amp; update</button>}<StatusPill rag={rag} /></div>
-        </div>
-        <div className="p-5">
-          <h2 className="text-lg font-medium text-slate-900">{node.title}</h2>
-          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-400"><Avatar id={node.ownerId} size={18} /> Owner {uName(node.ownerId)}{node.deadline && <span className="ml-2 inline-flex items-center gap-1"><Target size={12} /> deadline {fmtFull(parseISO(node.deadline))}</span>}{st.nextDue && <span className="ml-2 inline-flex items-center gap-1"><CalendarClock size={12} /> next {fmtFull(parseISO(st.nextDue))}</span>}</div>
-          <div className="mt-4 max-w-md"><ProgressPair planning={m.planning} execution={m.execution} size="lg" /></div>
-          <div className="mt-3 text-xs text-slate-500">{!leaf ? `${children.length} ${CHILD_LABEL[node.level]} inside · ` : ""}{st.done}/{st.total} activities done{st.overdue > 0 ? ` · ${st.overdue} overdue` : ""}</div>
-        </div>
+      {/* one card: this node, plus (for an objective) its initiatives right inside it */}
+      <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white">
+        <span className={`absolute inset-y-0 left-0 w-1 ${th.bar}`} />
+        {headerBlock}
+        {isObjectiveWithChildren && <div className="border-t border-slate-100 px-5 pb-5 pt-4">{insideDivider}{childrenGrid}</div>}
       </div>
 
-      <div className="mt-4 space-y-4">
-        {(att.blocked + att.overdue) > 0 && issue && (
-          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
-            <div className="flex items-start gap-2.5">
-              <AlertTriangle size={16} className="mt-0.5 shrink-0 text-rose-500" />
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium text-rose-800">Heads-up — {att.blocked > 0 ? `${att.blocked} blocked` : ""}{att.blocked > 0 && att.overdue > 0 ? " and " : ""}{att.overdue > 0 ? `${att.overdue} overdue` : ""} deeper down</div>
-                <div className="mt-0.5 text-xs text-rose-700">That's why this {LEVEL_LABEL[node.level].toLowerCase()} shows red. Root cause: <span className="font-medium">{issue.title}</span> — {issue.blocked ? "a task that's blocked (someone can't move forward until it's cleared)." : "a task past its due date."}</div>
-                {issue.workId !== node.id && <button onClick={() => onOpen(issue.workId)} className="mt-2 inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100">Go to the cause <ArrowRight size={12} /></button>}
-              </div>
-            </div>
-          </div>
-        )}
-        {node.result && <ResultCard work={node} m={m} isOrg={isOrg} patchWork={patchWork} />}
-        {isOrg && myCRs.length > 0 && <button onClick={goApprovals} className="flex w-full items-center justify-between rounded-xl border border-amber-200 bg-amber-50 p-4 text-left hover:bg-amber-100"><div><div className="text-sm font-medium text-amber-800">{myCRs.length} plan change{myCRs.length > 1 ? "s" : ""} awaiting your approval</div><div className="text-xs text-amber-700">Proposed by the team</div></div><span className="inline-flex items-center gap-1 rounded-md bg-white px-3 py-1.5 text-sm font-medium text-amber-800"><ClipboardCheck size={14} /> Review <ArrowRight size={13} /></span></button>}
-        {isOrg && (
-          <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
-            <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-violet-800"><Sparkles size={15} /> AI &amp; plan tools</div>
-            {node.level === "objective" ? (
-              <>
-                <div className="flex flex-wrap gap-2">
-                  <button onClick={doSuggest} disabled={!!busy} className={btnLight}>{busy === "suggest" ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />} Suggest initiatives</button>
-                  <button onClick={doInsight} disabled={!!busy} className={btnLight}>{busy === "insight" ? <Loader2 size={14} className="animate-spin" /> : <Gauge size={14} />} Where does this stand</button>
-                </div>
-                <div className="mt-2 text-xs text-violet-700">At objective level AI shapes strategy — it proposes initiatives and reads the roll-up. Scheduling and assignment happen inside each initiative.</div>
-                {suggest && <div className="mt-3 space-y-1">{suggest.length === 0 && <div className="text-sm text-slate-500">No new suggestions.</div>}{suggest.map((s, i) => <div key={i} className="flex items-center gap-2 rounded-md border border-violet-100 bg-white px-3 py-1.5 text-sm"><span className="min-w-0 flex-1 truncate text-slate-700">{s.title}</span><Chip tone="blue">{s.type}</Chip><button onClick={() => addSuggested(s)} className="shrink-0 rounded bg-slate-900 px-2 py-1 text-xs font-medium text-white hover:bg-slate-700">Add</button></div>)}</div>}
-              </>
-            ) : (
-              <>
-                <div className="flex flex-wrap gap-2">
-                  <button onClick={autoAssign} disabled={!!busy} className={btnLight}><Wand2 size={14} /> Auto-assign</button>
-                  <button onClick={expand} disabled={!!busy} className={btnLight}>{busy === "expand" ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Fill missing</button>
-                  <button onClick={doInsight} disabled={!!busy} className={btnLight}>{busy === "insight" ? <Loader2 size={14} className="animate-spin" /> : <Gauge size={14} />} Where do I stand</button>
-                  <button onClick={() => setModify(true)} disabled={!!busy} className={btnLight}><Pencil size={14} /> Modify plan</button>
-                  <button onClick={() => setAddUn(true)} disabled={!!busy} className={btnLight}><Plus size={14} /> Unplanned</button>
-                  {(node.level === "work" || node.level === "subwork") && <button onClick={() => setDeliv(node)} className={btnLight}>{node.deliverable ? <><Star size={14} className="text-amber-500" /> {node.deliverable.score}/100</> : <><FileText size={14} /> Deliverable</>}</button>}
-                </div>
-                {insight && <div className="mt-3 space-y-1 text-sm"><p className="text-slate-700">{insight.read}</p><p className="text-violet-800"><span className="font-medium">Next: </span>{insight.action}</p></div>}
-              </>
-            )}
-            {node.level === "objective" && insight && <div className="mt-3 space-y-1 text-sm"><p className="text-slate-700">{insight.read}</p><p className="text-violet-800"><span className="font-medium">Next: </span>{insight.action}</p></div>}
-          </div>
-        )}
-      </div>
+      <div className="mt-4">{alertsStack}</div>
 
-      {/* ---- divider: bifurcation into what's inside ---- */}
-      <div className="mb-3 mt-6 flex items-center gap-2">
-        <span className={`h-2.5 w-2.5 rounded-full ${leaf ? LEVEL_THEME.activity.bar : LEVEL_THEME[CHILD_LEVEL[node.level]].bar}`} />
-        <span className="text-sm font-medium text-slate-700">Inside — {leaf ? `${nodeActs.length} ${nodeActs.length === 1 ? "activity" : "activities"}` : `${children.length} ${CHILD_LABEL[node.level]}`}</span>
-        <span className="hidden text-xs text-slate-400 sm:inline">{leaf ? "the actual tasks to execute" : "click any to drill in one level"}</span>
-        <div className="h-px flex-1 bg-slate-200" />
-        {canCreate && <button onClick={() => setAddChild(true)} className={btnLight}><Plus size={14} /> Add {childLabel}</button>}
-      </div>
-
-      {/* ---- SECTION B: the level below ---- */}
-      {!leaf && (
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          {children.map((c) => {
-            const ct = LEVEL_THEME[c.level]; const cm = computeMeters(works, acts, c.id); const cst = workStats(works, acts, c.id); const crag = nodeRag(works, acts, c.id); const cissue = deepestIssue(works, acts, c.id); const grand = works.filter((x) => x.parentId === c.id).length;
-            return (
-              <div key={c.id} className={`overflow-hidden rounded-xl border bg-white ${crag === "red" ? "border-rose-200" : "border-slate-200"}`}>
-                <div className={`h-1 ${ct.bar}`} />
-                <div className="p-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <button onClick={() => onOpen(c.id)} className="min-w-0 text-left">
-                      <LevelChip level={c.level} />
-                      <div className="mt-1 truncate text-sm font-medium text-slate-800 hover:underline">{c.title}</div>
-                      <div className="mt-0.5 flex items-center gap-1 text-xs text-slate-400"><Avatar id={c.ownerId} size={14} /> {uFirst(c.ownerId)}{c.result && <span> · {cm.resultPct != null ? Math.round(cm.resultPct) + "%" : "—"} result</span>}</div>
-                    </button>
-                    <StatusPill rag={crag} />
-                  </div>
-                  <div className="mt-3"><ProgressPair planning={cm.planning} execution={cm.execution} /></div>
-                  <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
-                    <span>{grand || cst.total} {grand ? CHILD_LABEL[c.level] : "activities"} · {cst.done}/{cst.total} done{cst.overdue > 0 ? ` · ${cst.overdue} overdue` : ""}</span>
-                    <button onClick={() => onOpen(c.id)} className="inline-flex items-center gap-1 font-medium text-slate-500 hover:text-slate-800">Open <ArrowRight size={12} /></button>
-                  </div>
-                  {cissue && <button onClick={() => onOpen(cissue.workId)} className="mt-2 flex w-full items-center gap-1.5 rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-left text-xs text-rose-800 hover:bg-rose-100"><AlertTriangle size={12} className="shrink-0 text-rose-500" /><span className="min-w-0 flex-1 truncate">{cissue.blocked ? "Blocked" : "Overdue"}: {cissue.title}</span><ArrowRight size={11} className="shrink-0" /></button>}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {!isObjectiveWithChildren && <div className="mt-6">{insideDivider}</div>}
+      {!isObjectiveWithChildren && !leaf && childrenGrid}
 
       {leaf && (
         <div className="space-y-2">

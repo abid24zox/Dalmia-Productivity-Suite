@@ -52,7 +52,7 @@ export async function pickOneDriveFile() {
       clientId: import.meta.env.VITE_MSAL_CLIENT_ID,
       action: "query",
       multiSelect: false,
-      advanced: { accessToken: token, endpointHint, queryParameters: "select=id,name,file,@microsoft.graph.downloadUrl" },
+      advanced: { accessToken: token, endpointHint, queryParameters: "select=id,name,file,@content.downloadUrl,@microsoft.graph.downloadUrl" },
       success: (res) => resolve((res.value || [])[0] || null),
       cancel: () => resolve(null),
       error: (e) => reject(new Error(e?.message || "OneDrive picker failed.")),
@@ -60,9 +60,13 @@ export async function pickOneDriveFile() {
   });
   if (!picked) return null;
 
-  const downloadUrl = picked["@microsoft.graph.downloadUrl"];
+  // The picker's "query" action returns the download link under different
+  // property names depending on account type (personal vs work/school) and
+  // API surface — check both rather than silently failing.
+  const downloadUrl = picked["@microsoft.graph.downloadUrl"] || picked["@content.downloadUrl"];
+  if (!downloadUrl) { console.error("OneDrive picker result had no download URL:", picked); throw new Error(`Couldn't get a download link for "${picked.name}" from OneDrive.`); }
   const fileRes = await fetch(downloadUrl);
-  if (!fileRes.ok) throw new Error(`Couldn't download "${picked.name}" from OneDrive.`);
+  if (!fileRes.ok) throw new Error(`Couldn't download "${picked.name}" from OneDrive (HTTP ${fileRes.status}).`);
   const buf = await fileRes.arrayBuffer();
   return { name: picked.name, dataB64: b64FromArrayBuffer(buf) };
 }
