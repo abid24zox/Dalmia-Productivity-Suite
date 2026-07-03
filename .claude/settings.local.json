@@ -21,7 +21,12 @@
       "Bash(echo \"EXIT:$?\")",
       "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:5183/src/App.jsx)",
       "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:5183/src/msal.js)",
-      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:5183/src/OneDriveConnect.jsx)"
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:5183/src/OneDriveConnect.jsx)",
+      "Bash(npm run *)",
+      "Bash(curl -s http://localhost:4000/api/snapshot)",
+      "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(s\\);console.log\\('users',j.users.length,'works',j.works.length,'acts',j.acts.length,'crs',j.crs.length\\);console.log\\('objectives:',j.works.filter\\(w=>w.level==='objective'\\).map\\(w=>w.title\\).join\\(' | '\\)\\);}\\)\")",
+      "Bash(curl -s http://localhost:4000/api/health)",
+      "Bash(netstat -ano)"
     ]
   }
 }

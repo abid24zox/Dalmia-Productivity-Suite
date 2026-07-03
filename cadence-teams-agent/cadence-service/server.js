@@ -76,9 +76,9 @@ app.get('/api/initiatives/:id', (req, res) => {
   ok(res, store.detailInitiative(top));
 });
 app.post('/api/initiatives', (req, res) => {
-  const { ownerId, title, type, objective, deadline, teamId, parentId, subworks } = req.body || {};
+  const { ownerId, title, type, objective, deadline, teamId, parentId, works, subworks } = req.body || {};
   if (!title) return bad(res, 'title required');
-  const initiative = store.createInitiative({ ownerId, title, type, objective, deadline, teamId, parentId, subworks: subworks || [] });
+  const initiative = store.createInitiative({ ownerId, title, type, objective, deadline, teamId, parentId, works: works || subworks || [] });
   withSnap(res, { initiative });
 });
 

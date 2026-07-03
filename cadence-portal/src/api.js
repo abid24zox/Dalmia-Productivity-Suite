@@ -1,10 +1,19 @@
 // Thin HTTP client to the shared Cadence service. Every portal read/write goes
 // through here, so the portal and the Teams agent operate on ONE dataset.
-const BASE = import.meta.env.VITE_CADENCE_API_URL || 'http://localhost:4000';
+const CONFIGURED = import.meta.env.VITE_CADENCE_API_URL || 'http://localhost:4000';
 const KEY = import.meta.env.VITE_CADENCE_API_KEY || '';
 
+// If the service is configured on localhost but the page is served from anywhere
+// else (a phone on the LAN IP, or an ngrok tunnel), "localhost" points at the
+// wrong device and an https page can't call plain-http — both surface as
+// "Failed to fetch". In that case talk to the API on the page's own origin and
+// let the Vite dev proxy forward /api to the local service (see vite.config.js).
+const CONFIGURED_IS_LOCAL = /^https?:\/\/(localhost|127\.0\.0\.1)/i.test(CONFIGURED);
+const ON_LOCALHOST = typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname);
+const BASE = CONFIGURED_IS_LOCAL && !ON_LOCALHOST ? '' : CONFIGURED;
+
 async function call(path, init = {}) {
-  const headers = { 'content-type': 'application/json', ...(init.headers || {}) };
+  const headers = { 'content-type': 'application/json', 'ngrok-skip-browser-warning': 'true', ...(init.headers || {}) };
   if (KEY) headers['x-api-key'] = KEY;
   const res = await fetch(`${BASE}${path}`, { ...init, headers });
   const text = await res.text();

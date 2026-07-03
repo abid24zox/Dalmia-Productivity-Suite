@@ -3,12 +3,12 @@ import {
   Lock, User, LogOut, LayoutGrid, Calendar, Users, ClipboardCheck, Plus,
   Sparkles, Play, Square, Check, X, ChevronLeft, ChevronRight, Target, Clock,
   AlertTriangle, Mic, FileText, Upload, Pencil, Trash2, Loader2, MessageSquare, Star,
-  Gauge, Type as TypeIcon, Wand2, CalendarClock, ArrowRight, AlertCircle, ClipboardList, Cloud,
+  Gauge, Type as TypeIcon, Wand2, CalendarClock, ArrowRight, AlertCircle, ClipboardList, Cloud, Folder, Search,
 } from "lucide-react";
 import { api } from "./api";
 import OneDriveConnect from "./OneDriveConnect";
 import { MSAL_CONFIGURED } from "./msal";
-import { pickOneDriveFile } from "./onedrivePicker";
+import { pickOneDriveFile, registerOneDriveOpener, odListChildren, odDownload, b64FromArrayBuffer } from "./onedrivePicker";
 
 /* =====================================================================
  * Cadence portal — LIVE. State is the shared Cadence service (single source
@@ -21,11 +21,11 @@ async function aiComplete(system, user) {
 }
 function parseJSON(t) { const c = t.replace(/```json/gi, "").replace(/```/g, "").trim(); return JSON.parse(c.slice(c.indexOf("{"), c.lastIndexOf("}") + 1)); }
 const AI = {
-  async decompose(title, type) { return parseJSON(await aiComplete('Enterprise delivery planner. Break the work into 2-4 works (phases of execution), each with 2-4 sub-works, each with 1-3 activities. Return ONLY JSON: {"works":[{"title":string,"subworks":[{"title":string,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}]}', `Work: "${title}". Type: ${type}.`)); },
+  async decompose(title, type) { return parseJSON(await aiComplete('Enterprise delivery planner. Break the goal into 3-6 works (phases of execution), each with 1-4 concrete activities. Return ONLY JSON: {"works":[{"title":string,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}', `Work: "${title}". Type: ${type}.`)); },
   async extractMom(text) { return parseJSON(await aiComplete('Read meeting minutes, extract work. Return ONLY JSON: {"works":[{"title":string,"type":"procurement"|"cost"|"onboarding"|"compliance"|"general","activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}', `Minutes:\n"""${text}"""`)); },
-  async modifyPlan(planText, instruction) { return parseJSON(await aiComplete('Edit a project plan. Return ONLY JSON: {"ops":[{"op":"add_activity","subwork":string,"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}|{"op":"add_subwork","title":string}|{"op":"retype","match":string,"type":"self"|"meeting"|"call"|"site"}]}', `Current plan:\n${planText}\n\nInstruction: ${instruction}`)); },
+  async modifyPlan(planText, instruction) { return parseJSON(await aiComplete('Edit a project plan. Return ONLY JSON: {"ops":[{"op":"add_activity","work":string,"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}|{"op":"add_work","title":string}|{"op":"retype","match":string,"type":"self"|"meeting"|"call"|"site"}]}', `Current plan:\n${planText}\n\nInstruction: ${instruction}`)); },
   async insight(title, m) { return parseJSON(await aiComplete('Execution advisor to a CEO. Return ONLY JSON: {"read":string(2 sentences),"action":string}', `Work "${title}". Planning ${m.planning}%, execution ${m.execution}%. Behind: ${m.behind}. Stuck: ${m.stuck || "none"}.`)); },
-  async score(work, activity, content) { return parseJSON(await aiComplete('Delivery quality reviewer. Score fit of a deliverable to the activity/work, 0-100. Return ONLY JSON: {"score":number,"verdict":string(<=6 words),"feedback":string}', `Work: "${work}". Activity: "${activity}". Deliverable:\n"""${content}"""`)); },
+  async score(work, activity, spec, content) { return parseJSON(await aiComplete('Delivery quality reviewer. Score how well the deliverable satisfies what the activity asked for, 0-100. Return ONLY JSON: {"score":number,"verdict":string(<=6 words),"feedback":string}', `Work: "${work}". Activity: "${activity}". What was asked (spec): "${spec || 'n/a'}". Deliverable submitted:\n"""${content}"""`)); },
 };
 
 /* ---------- dates ---------- */
@@ -33,11 +33,23 @@ const MSD = 86400000;
 const sod = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
 const TODAY = sod(new Date());
 const addDays = (d, n) => sod(new Date(sod(d).getTime() + n * MSD));
-const iso = (d) => sod(d).toISOString().slice(0, 10);
+// Local (not UTC) YYYY-MM-DD — toISOString() shifts the date back a day in
+// timezones ahead of UTC, which is why the calendar looked one day off.
+const iso = (d) => { const x = sod(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
 const parseISO = (s) => (s ? sod(new Date(s + "T00:00:00")) : null);
 const startOfWeek = (d) => addDays(d, -((sod(d).getDay() + 6) % 7));
 const fmtFull = (d) => d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
 const isOverdue = (a) => a.date && parseISO(a.date) < TODAY && a.status !== "executed";
+// Days until a date (negative = past). Used to highlight due / overdue nodes.
+const daysLeft = (dateStr) => (dateStr ? Math.round((parseISO(dateStr) - TODAY) / MSD) : null);
+// Compact deadline chip for a work/initiative: "in 3d" / "due today" / "5d over".
+function DueChip({ date, small }) {
+  if (!date) return null;
+  const d = daysLeft(date);
+  const tone = d < 0 ? "bg-rose-50 text-rose-700" : d <= 3 ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-500";
+  const txt = d < 0 ? `${-d}d over` : d === 0 ? "due today" : `in ${d}d`;
+  return <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 ${small ? "text-[10px]" : "py-0.5 text-xs"} font-medium ${tone}`}><Clock size={small ? 9 : 10} /> {txt}</span>;
+}
 // Scopes an activity set to a due-date cutoff (e.g. for "as of this date" analysis) — no-op when no date is given.
 const actsUpTo = (acts, dueISO) => (dueISO ? acts.filter((a) => a.date && parseISO(a.date) <= parseISO(dueISO)) : acts);
 
@@ -168,23 +180,21 @@ function visibleTops(works, acts, user) {
   if (user.level === "vp") return tops.filter((w) => w.ownerId === user.id || fnOf(w.ownerId) === user.fn || subtreeAssignees(works, acts, w.id).some((uid) => fnOf(uid) === user.fn));
   return tops.filter((w) => w.ownerId === user.id || subtreeIds(works, w.id).some((id) => acts.some((a) => a.workId === id && a.assigneeId === user.id)));
 }
-function sufficiency(m, st) { if (st.overdue > 0) return ["Behind", "rose"]; if (m.planning < 70) return ["Under-planned", "amber"]; if (m.resultPct != null && m.execution - m.resultPct > 25) return ["Output ahead of result", "amber"]; return ["Sufficient", "emerald"]; }
 const loadOf = (acts, uid) => acts.filter((a) => a.assigneeId === uid && a.status !== "executed" && a.status !== "cancelled").reduce((s, a) => s + a.plannedHrs, 0);
 const RAG = { green: ["bg-emerald-500", "text-emerald-700", "bg-emerald-50", "On track"], amber: ["bg-amber-500", "text-amber-700", "bg-amber-50", "At risk"], red: ["bg-rose-500", "text-rose-700", "bg-rose-50", "Behind"] };
 
 /* ---------- tree / roll-up helpers ---------- */
-const LEVEL_LABEL = { objective: "Objective", initiative: "Initiative", work: "Work", subwork: "Sub-work", activity: "Activity" };
-const CHILD_LABEL = { objective: "initiatives", initiative: "works", work: "sub-works", subwork: "activities" };
-const CHILD_LEVEL = { objective: "initiative", initiative: "work", work: "subwork", subwork: "activity" };
+const LEVEL_LABEL = { objective: "Objective", initiative: "Initiative", work: "Work", activity: "Activity" };
+const CHILD_LABEL = { objective: "initiatives", initiative: "works", work: "activities" };
+const CHILD_LEVEL = { objective: "initiative", initiative: "work", work: "activity" };
 // One distinct colour per level so you always know your altitude. Kept clear of the RAG greens/ambers/reds.
 const LEVEL_THEME = {
   objective: { name: "Objective", bar: "bg-violet-500", chip: "bg-violet-100 text-violet-700", dot: "bg-violet-500", ring: "border-violet-200", soft: "bg-violet-50", text: "text-violet-700" },
   initiative: { name: "Initiative", bar: "bg-blue-500", chip: "bg-blue-100 text-blue-700", dot: "bg-blue-500", ring: "border-blue-200", soft: "bg-blue-50", text: "text-blue-700" },
   work: { name: "Work", bar: "bg-teal-500", chip: "bg-teal-100 text-teal-700", dot: "bg-teal-500", ring: "border-teal-200", soft: "bg-teal-50", text: "text-teal-700" },
-  subwork: { name: "Sub-work", bar: "bg-orange-500", chip: "bg-orange-100 text-orange-700", dot: "bg-orange-500", ring: "border-orange-200", soft: "bg-orange-50", text: "text-orange-700" },
   activity: { name: "Activity", bar: "bg-slate-400", chip: "bg-slate-100 text-slate-600", dot: "bg-slate-400", ring: "border-slate-200", soft: "bg-slate-50", text: "text-slate-600" },
 };
-const HOME_LEVEL = { md: "objective", vp: "initiative", member: "subwork" };
+const HOME_LEVEL = { md: "objective", vp: "initiative", member: "work" };
 function subtreeActs(works, acts, id) { const ids = subtreeIds(works, id); return acts.filter((a) => ids.includes(a.workId) && a.status !== "cancelled"); }
 // Strict roll-up: any overdue/blocked descendant turns a node red, all the way up.
 function nodeRag(works, acts, id) { const sa = subtreeActs(works, acts, id); if (sa.some((a) => isOverdue(a) || a.blocked)) return "red"; const m = computeMeters(works, acts, id); if (m.stuck || m.planning - m.execution > 40) return "amber"; return "green"; }
@@ -215,7 +225,7 @@ function Avatar({ id, size = 22 }) { return <span className="inline-flex items-c
 function Chip({ children, tone = "slate" }) { const t = { slate: "bg-slate-100 text-slate-600", rose: "bg-rose-50 text-rose-700", amber: "bg-amber-50 text-amber-800", emerald: "bg-emerald-50 text-emerald-700", violet: "bg-violet-100 text-violet-700", blue: "bg-blue-100 text-blue-700" }[tone]; return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${t}`}>{children}</span>; }
 function LevelChip({ level }) { const th = LEVEL_THEME[level] || LEVEL_THEME.activity; return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${th.chip}`}><span className={`h-1.5 w-1.5 rounded-full ${th.bar}`} /> {th.name}</span>; }
 function StatusPill({ rag }) { const rg = RAG[rag]; return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${rg[2]} ${rg[1]}`}><span className={`h-1.5 w-1.5 rounded-full ${rg[0]}`} /> {rg[3]}</span>; }
-function LevelLegend() { return <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400"><span className="font-medium text-slate-500">Levels:</span>{["objective", "initiative", "work", "subwork", "activity"].map((l) => { const th = LEVEL_THEME[l]; return <span key={l} className="inline-flex items-center gap-1"><span className={`h-2 w-2 rounded-full ${th.bar}`} />{th.name}</span>; })}<span className="text-slate-300">→ each level nests inside the one before it</span></div>; }
+function LevelLegend() { return <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400"><span className="font-medium text-slate-500">Levels:</span>{["objective", "initiative", "work", "activity"].map((l) => { const th = LEVEL_THEME[l]; return <span key={l} className="inline-flex items-center gap-1"><span className={`h-2 w-2 rounded-full ${th.bar}`} />{th.name}</span>; })}<span className="text-slate-300">→ each level nests inside the one before it</span></div>; }
 function ProgressPair({ planning, execution, size = "sm" }) {
   const big = size === "lg";
   return (
@@ -233,6 +243,77 @@ function Modal({ children, onClose, wide }) {
   return <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900 bg-opacity-40 p-4" onClick={onClose}><div className={`w-full ${wide ? "max-w-2xl" : "max-w-md"} rounded-xl border border-slate-200 bg-white p-5 shadow-lg`} style={{ maxHeight: "88vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>{children}</div></div>;
 }
 const ACT_ICON = { meeting: Users, call: MessageSquare, self: User, site: Target };
+
+/* ---------- OneDrive file browser (Microsoft Graph-backed) ---------- */
+const fmtSize = (n) => !n ? "" : n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+// Mounted once at the app root. pickOneDriveFile() (called from anywhere)
+// resolves through this single host, so both call sites keep the simple
+// `const picked = await pickOneDriveFile()` contract.
+function OneDrivePickerHost() {
+  const [token, setToken] = useState(null); // non-null while the modal is open
+  const resolveRef = useRef(null);
+  useEffect(() => {
+    registerOneDriveOpener((tok) => new Promise((resolve) => { resolveRef.current = resolve; setToken(tok); }));
+    return () => registerOneDriveOpener(null);
+  }, []);
+  const finish = (val) => { const r = resolveRef.current; resolveRef.current = null; setToken(null); if (r) r(val); };
+  if (!token) return null;
+  return <OneDriveBrowser token={token} onCancel={() => finish(null)} onPick={finish} />;
+}
+function OneDriveBrowser({ token, onCancel, onPick }) {
+  const [path, setPath] = useState([{ id: null, name: "OneDrive" }]);
+  const [items, setItems] = useState(null); // null = loading
+  const [err, setErr] = useState("");
+  const [downloading, setDownloading] = useState(null);
+  const here = path[path.length - 1];
+  useEffect(() => {
+    let alive = true; setItems(null); setErr("");
+    odListChildren(token, here.id)
+      .then((v) => { if (alive) setItems(v); })
+      .catch((e) => { if (alive) { setErr(e.message || "Couldn't list OneDrive."); setItems([]); } });
+    return () => { alive = false; };
+  }, [here.id, token]);
+  const pick = async (it) => {
+    setDownloading(it.id); setErr("");
+    try { const buf = await odDownload(token, it); onPick({ name: it.name, dataB64: b64FromArrayBuffer(buf) }); }
+    catch (e) { setErr(e.message || "Couldn't download that file."); setDownloading(null); }
+  };
+  return (
+    <Modal onClose={onCancel} wide>
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="inline-flex items-center gap-2 text-sm font-medium text-slate-900"><Cloud size={16} className="text-sky-600" /> Choose a file from OneDrive</h3>
+        <button onClick={onCancel} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+      </div>
+      <div className="mb-2 flex flex-wrap items-center gap-0.5 text-xs">
+        {path.map((p, i) => (
+          <span key={i} className="inline-flex items-center gap-0.5">
+            {i > 0 && <ChevronRight size={12} className="text-slate-300" />}
+            <button onClick={() => setPath((s) => s.slice(0, i + 1))} className={`rounded px-1 py-0.5 hover:bg-slate-100 ${i === path.length - 1 ? "font-medium text-slate-700" : "text-sky-600"}`}>{p.name}</button>
+          </span>
+        ))}
+      </div>
+      {err && <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-700">{err}</div>}
+      <div className="max-h-80 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+        {items === null ? (
+          <div className="flex items-center justify-center gap-2 py-10 text-sm text-slate-400"><Loader2 size={16} className="animate-spin" /> Loading…</div>
+        ) : items.length === 0 ? (
+          <div className="py-10 text-center text-sm text-slate-400">This folder is empty.</div>
+        ) : items.map((it) => it.folder ? (
+          <button key={it.id} onClick={() => setPath((s) => [...s, { id: it.id, name: it.name }])} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
+            <Folder size={16} className="shrink-0 text-amber-500" /><span className="min-w-0 flex-1 truncate">{it.name}</span>
+            <span className="text-xs text-slate-400">{it.folder.childCount || ""}</span><ChevronRight size={14} className="shrink-0 text-slate-300" />
+          </button>
+        ) : (
+          <button key={it.id} onClick={() => pick(it)} disabled={!!downloading} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+            <FileText size={16} className="shrink-0 text-slate-400" /><span className="min-w-0 flex-1 truncate">{it.name}</span>
+            {downloading === it.id ? <Loader2 size={14} className="shrink-0 animate-spin text-slate-400" /> : <span className="text-xs text-slate-400">{fmtSize(it.size)}</span>}
+          </button>
+        ))}
+      </div>
+      <p className="mt-2 text-xs text-slate-400">PDF, Word, .md and .txt are read automatically once picked.</p>
+    </Modal>
+  );
+}
 
 /* ---------- multi-modal input ---------- */
 // Runtime capability flags, set once from the service /api/health.
@@ -317,16 +398,34 @@ function MultiModalInput({ value, onChange, placeholder, onPdf }) {
   );
 }
 
+/* ---------- session + hash routing ---------- */
+// Persist the signed-in user so a refresh doesn't bounce back to Login, and mirror
+// the current view in the URL hash so refresh restores it and the browser back/
+// forward buttons navigate between pages. Hash routing needs no server rewrites,
+// so it behaves identically locally, on a LAN IP, and over an ngrok tunnel.
+const SESSION_KEY = "cadence_session_user";
+const loadSession = () => { try { return JSON.parse(localStorage.getItem(SESSION_KEY) || "null"); } catch { return null; } };
+const ROUTE_TABS = ["portfolio", "myday", "team", "approvals"];
+const routeToHash = (tab, openId) => (openId ? `#/n/${encodeURIComponent(openId)}` : `#/${tab}`);
+const hashToRoute = () => {
+  const h = (typeof window !== "undefined" ? window.location.hash : "").replace(/^#\/?/, "");
+  if (h.startsWith("n/")) return { tab: "portfolio", openId: decodeURIComponent(h.slice(2)) };
+  const t = h.split(/[/?]/)[0];
+  return { tab: ROUTE_TABS.includes(t) ? t : "portfolio", openId: null };
+};
+
 /* ==================================================================== */
 export default function App() {
-  const [me, setMe] = useState(null);
+  const initialRoute = hashToRoute();
+  const [me, setMe] = useState(loadSession);
+  const [hydrating, setHydrating] = useState(() => !!loadSession());
   const [works, setWorks] = useState([]);
   const [acts, setActs] = useState([]);
   const [crs, setCrs] = useState([]);
   const [teams, setTeams] = useState([]);
   const [remarks, setRemarks] = useState([]);
-  const [tab, setTab] = useState("portfolio");
-  const [openId, setOpenId] = useState(null);
+  const [tab, setTab] = useState(initialRoute.tab);
+  const [openId, setOpenId] = useState(initialRoute.openId);
   const [busy, setBusy] = useState(null);
   const [note, setNote] = useState(null);
   const [capture, setCapture] = useState(false);
@@ -397,9 +496,9 @@ export default function App() {
     if (ops && ops.length) {
       opsCount = ops.length;
       const directSubs = works.filter((w) => w.parentId === node.id); const container = directSubs.length ? directSubs : [node];
-      ops.forEach((op) => { if (op.op === "add_subwork") nw.push({ id: nid("w"), parentId: node.id, level: "subwork", title: op.title, type: node.type || "general", ownerId: node.ownerId }); });
+      ops.forEach((op) => { if (op.op === "add_work" || op.op === "add_subwork") nw.push({ id: nid("w"), parentId: node.id, level: "work", title: op.title, type: node.type || "general", ownerId: node.ownerId }); });
       const liveSubs = container.concat(nw);
-      ops.forEach((op) => { if (op.op === "add_activity") { const sw = liveSubs.find((s) => s.title.toLowerCase().includes((op.subwork || "").toLowerCase())) || liveSubs[0]; if (sw) na.push({ id: nid("a"), workId: sw.id, title: op.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(op.estimateHrs) || 2, actualHrs: null, actType: op.type || "self", unplanned: true }); } });
+      ops.forEach((op) => { if (op.op === "add_activity") { const key = (op.work || op.subwork || "").toLowerCase(); const sw = liveSubs.find((s) => s.title.toLowerCase().includes(key)) || liveSubs[0]; if (sw) na.push({ id: nid("a"), workId: sw.id, title: op.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(op.estimateHrs) || 2, actualHrs: null, actType: op.type || "self", unplanned: true }); } });
       const ids = subtreeIds(works, node.id);
       ops.forEach((op) => { if (op.op === "retype") acts.forEach((a) => { if (ids.includes(a.workId) && a.title.toLowerCase().includes((op.match || "").toLowerCase())) actPatches[a.id] = { ...(actPatches[a.id] || {}), actType: op.type }; }); });
     }
@@ -414,8 +513,8 @@ export default function App() {
   };
   const openNudges = () => { if (me) persist(() => setRemarks((prev) => prev.map((r) => (r.toIds.includes(me.id) && !r.readBy.includes(me.id) ? { ...r, readBy: [...r.readBy, me.id] } : r))), () => api.markRemarksRead(me.id)); setNudgeOpen(true); };
 
-  const handleLogin = async (user) => { setLoading(true); try { applySnap(await api.snapshot()); } catch { flash("Couldn't reach the Cadence service — is it running on port 4000?"); } setMe(user); setLoading(false); };
-  const logout = () => { setMe(null); setTab("portfolio"); setOpenId(null); setWorks([]); setActs([]); setCrs([]); setTeams([]); setRemarks([]); };
+  const handleLogin = async (user) => { setLoading(true); try { applySnap(await api.snapshot()); } catch { flash("Couldn't reach the Cadence service — is it running on port 4000?"); } localStorage.setItem(SESSION_KEY, JSON.stringify(user)); setMe(user); setLoading(false); };
+  const logout = () => { localStorage.removeItem(SESSION_KEY); if (typeof window !== "undefined") window.location.hash = ""; setMe(null); setTab("portfolio"); setOpenId(null); setWorks([]); setActs([]); setCrs([]); setTeams([]); setRemarks([]); };
 
   // probe service capabilities (voice mode) once
   useEffect(() => { api.health().then((h) => { CAP.deepgram = !!(h && h.deepgram); }).catch(() => {}); }, []);
@@ -426,6 +525,31 @@ export default function App() {
     return () => clearInterval(t);
   }, [me, refresh]);
 
+  // On a refresh with a persisted session, `me` is already restored from storage —
+  // reload the live data behind a brief splash so the page comes back where it was.
+  useEffect(() => {
+    let alive = true;
+    if (loadSession()) refresh().finally(() => alive && setHydrating(false));
+    else setHydrating(false);
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // View -> URL: mirror the current page in the hash (creates history entries so
+  // browser Back/Forward move between pages).
+  useEffect(() => {
+    if (!me) return;
+    const desired = routeToHash(tab, openId);
+    if (window.location.hash !== desired) window.location.hash = desired;
+  }, [me, tab, openId]);
+  // URL -> View: respond to Back/Forward and manual hash edits.
+  useEffect(() => {
+    if (!me) return;
+    const onHash = () => { const r = hashToRoute(); setTab(r.tab); setOpenId(r.openId); };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, [me]);
+
+  if (me && hydrating) return <div className="flex items-center justify-center bg-stone-50 text-sm text-slate-400" style={{ minHeight: 720 }}><Loader2 className="mr-2 animate-spin" size={18} /> Loading your workspace…</div>;
   if (!me) return <Login onLogin={handleLogin} />;
   const tops = works.filter((w) => w.parentId === null);
   const open = openId ? works.find((w) => w.id === openId) : null;
@@ -459,6 +583,7 @@ export default function App() {
       {objModal && <QuickCreate {...{ me, parent: null, level: "objective", works, store, busy, setBusy, flash, onClose: () => setObjModal(false), onCreated: (id) => { setTab("portfolio"); setPortView("scorecard"); setOpenId(id); } }} />}
       {nudgeOpen && <NudgeInbox {...{ remarks, me, onOpen: (id) => { setNudgeOpen(false); setTab("portfolio"); setOpenId(id); }, onClose: () => setNudgeOpen(false) }} />}
       {remarkNode && <RemarkModal {...{ node: remarkNode, works, acts, busy, setBusy, flash, onSubmit: addRemark, onClose: () => setRemarkNode(null) }} />}
+      {MSAL_CONFIGURED && <OneDrivePickerHost />}
     </div>
   );
 }
@@ -494,80 +619,6 @@ function Tile({ label, value, tone }) { return <div className="rounded-xl bg-whi
 function Panel({ title, right, children }) { return <div className="rounded-xl border border-slate-200 bg-white p-4"><div className="mb-3 flex items-center justify-between"><div className="text-sm font-medium text-slate-700">{title}</div>{right}</div>{children}</div>; }
 
 
-function SufficiencyPanel({ rows, title }) {
-  const objs = rows.filter((r) => r.w.result);
-  return (
-    <Panel title={title || "Sufficiency & gap to target"}>
-      <div className="space-y-3">
-        {objs.length === 0 && <div className="text-xs text-slate-400">No result-bearing initiatives in scope.</div>}
-        {objs.map(({ w, m, st }) => { const [lbl, tone] = sufficiency(m, st); const gap = Math.round((w.result.target - w.result.current) * 100) / 100;
-          return (
-            <div key={w.id} className="rounded-lg border border-slate-100 p-3">
-              <div className="flex items-center justify-between gap-2"><span className="min-w-0 truncate text-sm font-medium text-slate-800">{w.title}</span><Chip tone={tone}>{lbl}</Chip></div>
-              <div className="mt-1 text-xs text-slate-500">{w.result.metric}: {w.result.current} of {w.result.target} {w.result.unit} · <span className="font-medium text-slate-700">gap {gap} {w.result.unit}</span></div>
-              <div className="mt-2 grid grid-cols-2 gap-4 text-xs">
-                <div><div className="mb-0.5 flex justify-between"><span className="text-slate-400">Result attained</span><span className="font-mono text-violet-700">{m.resultPct != null ? Math.round(m.resultPct) : "—"}%</span></div><div className="h-1.5 rounded-full bg-violet-100 overflow-hidden"><div className="h-full bg-violet-500" style={{ width: `${m.resultPct || 0}%` }} /></div></div>
-                <div><div className="mb-0.5 flex justify-between"><span className="text-slate-400">Plan coverage</span><span className="font-mono text-teal-700">{m.planning}%</span></div><div className="h-1.5 rounded-full bg-teal-100 overflow-hidden"><div className="h-full bg-teal-500" style={{ width: `${m.planning}%` }} /></div></div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </Panel>
-  );
-}
-
-// Sufficiency/gap is only meaningful scoped to one objective at a time — a flat
-// cross-objective list reads as noise. Pick an objective (+ optional due-date
-// cutoff) to see just its initiatives.
-function SufficiencyByObjective({ works, acts, me }) {
-  const objectives = scopedObjectives(works, acts, me);
-  const [selId, setSelId] = useState("");
-  const [dueDate, setDueDate] = useState("");
-  const scopedActs = actsUpTo(acts, dueDate);
-  const objTitle = objectives.find((o) => o.id === selId)?.title;
-  const rows = selId ? works.filter((w) => w.level === "initiative" && w.parentId === selId).map((w) => ({ w, m: computeMeters(works, scopedActs, w.id), st: workStats(works, scopedActs, w.id) })) : [];
-  return (
-    <div>
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <select value={selId} onChange={(e) => setSelId(e.target.value)} className={`${inputCls} max-w-xs`}>
-          <option value="">Pick an objective for sufficiency &amp; gap…</option>
-          {objectives.map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
-        </select>
-        {selId && <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={`${inputCls} w-40`} title="Optional — only count activities due by this date" />}
-        {selId && dueDate && <button onClick={() => setDueDate("")} className="text-xs text-slate-400 hover:text-slate-700">clear date</button>}
-      </div>
-      {!selId
-        ? <div className="rounded-xl border border-dashed border-slate-200 bg-white p-4 text-center text-xs text-slate-400">Pick an objective above to see sufficiency &amp; gap to target for its initiatives.</div>
-        : <SufficiencyPanel rows={rows} title={`Sufficiency & gap — ${objTitle}${dueDate ? ` (as of ${dueDate})` : ""}`} />}
-    </div>
-  );
-}
-
-// Works carry no target metric (only Initiatives do) — "gap" here is planning/
-// schedule readiness: which Works are behind or lack a deadline.
-function WorkReadinessPanel({ works, acts, scopeInitiativeIds, onOpen }) {
-  const rows = works.filter((w) => w.level === "work" && scopeInitiativeIds.has(w.parentId))
-    .map((w) => { const m = computeMeters(works, acts, w.id); const parent = works.find((p) => p.id === w.parentId); const daysLeft = w.deadline ? Math.round((parseISO(w.deadline) - TODAY) / MSD) : null; return { w, m, parent, daysLeft, rag: nodeRag(works, acts, w.id) }; })
-    .filter((r) => r.rag !== "green" || r.m.planning < 70)
-    .sort((a, b) => a.m.planning - b.m.planning)
-    .slice(0, 6);
-  return (
-    <Panel title="Work readiness — schedule & planning gap">
-      {rows.length === 0 && <div className="text-xs text-slate-400">All works are planned and on track.</div>}
-      <div className="space-y-2">{rows.map(({ w, m, parent, daysLeft, rag }) => (
-        <button key={w.id} onClick={() => onOpen(w.id)} className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-100 p-2.5 text-left hover:bg-slate-50">
-          <div className="min-w-0">
-            <div className="truncate text-sm font-medium text-slate-800">{w.title}</div>
-            <div className="mt-0.5 truncate text-xs text-slate-400">{parent ? `under ${parent.title} · ` : ""}Plan {m.planning}% · Done {m.execution}%{daysLeft != null ? ` · ${daysLeft < 0 ? `${-daysLeft}d overdue` : `${daysLeft}d left`}` : " · no deadline set"}</div>
-          </div>
-          <StatusPill rag={rag} />
-        </button>
-      ))}</div>
-    </Panel>
-  );
-}
-
 function ByFunctionPanel({ initRows }) {
   const byFn = {};
   initRows.forEach((r) => { const f = fnOf(r.w.ownerId) || "—"; (byFn[f] = byFn[f] || []).push(r); });
@@ -576,42 +627,6 @@ function ByFunctionPanel({ initRows }) {
       <div className="space-y-2">{Object.entries(byFn).map(([f, rs]) => { const att = rs.filter((r) => r.m.resultPct != null); const avg = att.length ? Math.round(att.reduce((s, r) => s + r.m.resultPct, 0) / att.length) : null; const worst = rs.some((r) => r.rag === "red") ? "red" : rs.some((r) => r.rag === "amber") ? "amber" : "green";
         return <div key={f} className="flex items-center gap-3 rounded-lg border border-slate-100 px-3 py-2"><span className={`h-2.5 w-2.5 rounded-full ${RAG[worst][0]}`} /><span className="flex-1 text-sm text-slate-700">{f}</span><span className="text-xs text-slate-400">{rs.length} initiative{rs.length > 1 ? "s" : ""}</span><span className="font-mono text-sm text-violet-700">{avg != null ? avg + "%" : "—"}</span></div>;
       })}</div>
-    </Panel>
-  );
-}
-
-// Groups flagged items under the nearest Initiative-or-Work ancestor instead
-// of a flat list, so "needs attention" reads with hierarchy context.
-function groupAncestor(works, workId) {
-  let cur = works.find((w) => w.id === workId); let g = 0;
-  while (cur && g++ < 12) { if (cur.level === "initiative" || cur.level === "work" || !cur.parentId) return cur; cur = works.find((w) => w.id === cur.parentId); }
-  return cur;
-}
-function AttentionPanel({ rows, works, acts, onOpen }) {
-  const scope = new Set(rows.flatMap((r) => subtreeIds(works, r.w.id)));
-  const groups = {};
-  const pushTo = (groupNode, tone, Icon, title, sub, wid) => { if (!groupNode) return; const g = (groups[groupNode.id] = groups[groupNode.id] || { node: groupNode, items: [] }); g.items.push({ tone, Icon, title, sub, wid }); };
-  acts.filter((a) => scope.has(a.workId) && isOverdue(a)).forEach((a) => pushTo(groupAncestor(works, a.workId), "rose", Clock, a.title, "overdue " + fmtFull(parseISO(a.date)), a.workId));
-  acts.filter((a) => scope.has(a.workId) && a.blocked && a.status !== "executed").forEach((a) => pushTo(groupAncestor(works, a.workId), "rose", AlertTriangle, a.title, "blocked — needs help", a.workId));
-  rows.filter((r) => r.m.stuck).forEach((r) => pushTo(r.w, "amber", AlertTriangle, r.w.title, "stuck at " + r.m.stuck, r.w.id));
-  acts.filter((a) => scope.has(a.workId) && a.unplanned && a.status !== "executed").forEach((a) => pushTo(groupAncestor(works, a.workId), "amber", Plus, a.title, "unplanned — reshaped the plan", a.workId));
-  const allGroups = Object.values(groups);
-  const shown = allGroups.slice(0, 5);
-  const totalItems = allGroups.reduce((s, g) => s + g.items.length, 0);
-  return (
-    <Panel title="Needs attention" right={<span className="text-xs text-slate-400">{totalItems}</span>}>
-      {shown.length === 0 && <div className="text-xs text-slate-400">All clear.</div>}
-      <div className="space-y-3">
-        {shown.map((g) => { const gt = LEVEL_THEME[g.node.level] || LEVEL_THEME.activity;
-          return (
-            <div key={g.node.id}>
-              <button onClick={() => onOpen(g.node.id)} className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900"><span className={`h-1.5 w-1.5 rounded-full ${gt.bar}`} /> {g.node.title}</button>
-              <div className="space-y-1">{g.items.slice(0, 3).map((it, i) => <button key={i} onClick={() => onOpen(it.wid)} className="flex w-full items-center gap-2 rounded-md border border-slate-100 px-3 py-1.5 text-left hover:bg-slate-50"><it.Icon size={13} className={it.tone === "rose" ? "text-rose-500" : "text-amber-500"} /><span className="min-w-0 flex-1 truncate text-sm text-slate-700">{it.title}</span><span className="shrink-0 text-xs text-slate-400">{it.sub}</span></button>)}</div>
-            </div>
-          );
-        })}
-        {allGroups.length > 5 && <div className="text-xs text-slate-400">+{allGroups.length - 5} more area{allGroups.length - 5 !== 1 ? "s" : ""} need attention.</div>}
-      </div>
     </Panel>
   );
 }
@@ -640,61 +655,329 @@ function TeamSnapshot({ user, acts }) {
   );
 }
 
-/* ---------- Enterprise scorecard (cascading Objective -> Initiative -> Work -> Activity) ---------- */
-function ScorecardPanel({ label, total, view, setView, listItems, onSelectItem, onOpenItem, selectedId, statusRows, emptyLabel }) {
+
+/* ==================================================================== */
+/* Portfolio dashboard — one health/analytics view + a filterable,        */
+/* level-tagged tracker, so overdue / blocked / gap items are always      */
+/* shown as *what* they are (objective / initiative / work / activity).   */
+/* ==================================================================== */
+// A single status vocabulary spanning every level, so charts + tracker agree.
+const TRACK_STATUS = {
+  overdue: { label: "Overdue", dot: "bg-rose-500", text: "text-rose-700", soft: "bg-rose-50" },
+  blocked: { label: "Blocked", dot: "bg-rose-400", text: "text-rose-700", soft: "bg-rose-50" },
+  atrisk: { label: "At risk", dot: "bg-amber-500", text: "text-amber-700", soft: "bg-amber-50" },
+  ontrack: { label: "On track", dot: "bg-emerald-500", text: "text-emerald-700", soft: "bg-emerald-50" },
+  done: { label: "Done", dot: "bg-blue-500", text: "text-blue-700", soft: "bg-blue-50" },
+};
+const STATUS_KEYS = ["overdue", "blocked", "atrisk", "ontrack", "done"];
+const LEVEL_PLURAL = { objective: "Objectives", initiative: "Initiatives", work: "Work items", activity: "Activities" };
+// Hex mirrors of the TRACK_STATUS dot colours, for SVG donut strokes.
+const STATUS_HEX = { overdue: "#f43f5e", blocked: "#fb7185", atrisk: "#f59e0b", ontrack: "#10b981", done: "#3b82f6" };
+// Roll-up status for a work/initiative/objective (blockers/overdue win, then RAG).
+function nodeStatus(works, acts, id) {
+  const att = attentionCount(works, acts, id);
+  if (att.overdue > 0) return "overdue";
+  if (att.blocked > 0) return "blocked";
+  return nodeRag(works, acts, id) === "amber" ? "atrisk" : "ontrack";
+}
+// Status for a single activity (leaf).
+function activityStatus(a) {
+  if (a.status === "executed") return "done";
+  if (a.blocked) return "blocked";
+  if (isOverdue(a)) return "overdue";
+  const d = daysLeft(a.date);
+  return d != null && d <= 3 ? "atrisk" : "ontrack";
+}
+const emptyCounts = () => ({ overdue: 0, blocked: 0, atrisk: 0, ontrack: 0, done: 0 });
+const statusCountsFromItems = (rows) => { const c = emptyCounts(); rows.forEach((r) => { if (c[r.status] !== undefined) c[r.status]++; }); return c; };
+const statusCountsOfNodes = (nodes, works, acts) => { const c = emptyCounts(); nodes.forEach((n) => c[nodeStatus(works, acts, n.id)]++); return c; };
+
+// Flattens the user's scope into one uniform, level-tagged row model.
+function trackerRows(works, acts, me) {
+  const member = me.level === "member";
+  const objs = member ? [] : scopedObjectives(works, acts, me);
+  const inits = member ? [] : scopeInitiatives(works, acts, me);
+  const initIds = new Set(inits.map((i) => i.id));
+  const wks = member ? homeNodes(works, acts, me).filter((w) => w.level === "work")
+    : works.filter((w) => w.level === "work" && initIds.has(w.parentId));
+  const workIds = new Set(wks.map((w) => w.id));
+  const nameOf = (id) => works.find((w) => w.id === id)?.title || null;
+  const rows = [];
+  const nodeRow = (w) => {
+    const m = computeMeters(works, acts, w.id);
+    const att = attentionCount(works, acts, w.id);
+    const status = nodeStatus(works, acts, w.id);
+    const gap = (w.level === "initiative" && m.resultPct != null && m.resultPct < m.execution - 15) || (w.level === "work" && m.planning < 70);
+    return {
+      id: w.id, level: w.level, title: w.title, parentTitle: nameOf(w.parentId), ownerId: w.ownerId,
+      status, due: w.deadline || null, execution: Math.round(m.execution), planning: Math.round(m.planning),
+      resultPct: m.resultPct != null ? Math.round(m.resultPct) : null, result: w.result || null,
+      childCount: works.filter((x) => x.parentId === w.id).length, overdue: att.overdue, blocked: att.blocked,
+      openId: w.id, flags: { overdue: att.overdue > 0, blocked: att.blocked > 0, atrisk: status === "atrisk", ontrack: status === "ontrack", done: false, gap },
+    };
+  };
+  objs.forEach((o) => rows.push(nodeRow(o)));
+  inits.forEach((i) => rows.push(nodeRow(i)));
+  wks.forEach((w) => rows.push(nodeRow(w)));
+  acts.filter((a) => workIds.has(a.workId) && a.status !== "cancelled").forEach((a) => {
+    const status = activityStatus(a);
+    rows.push({
+      id: a.id, level: "activity", title: a.title, parentTitle: nameOf(a.workId), ownerId: a.assigneeId,
+      status, due: a.date || null, execution: a.status === "executed" ? 100 : 0, planning: null, resultPct: null,
+      result: null, hrs: a.plannedHrs, openId: a.workId,
+      flags: { overdue: status === "overdue", blocked: status === "blocked", atrisk: status === "atrisk", ontrack: status === "ontrack", done: status === "done", gap: false },
+    });
+  });
+  return rows;
+}
+
+/* ---------- small dashboard atoms ---------- */
+function StatusTag({ status }) { const s = TRACK_STATUS[status] || TRACK_STATUS.ontrack; return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${s.soft} ${s.text}`}><span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />{s.label}</span>; }
+function MiniBar({ pct, tone = "bg-teal-500" }) { return <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100"><div className={`h-full rounded-full ${tone}`} style={{ width: `${Math.max(0, Math.min(100, pct || 0))}%` }} /></div>; }
+function SegBar({ counts, total, onSeg }) {
+  const sum = total || STATUS_KEYS.reduce((s, k) => s + (counts[k] || 0), 0) || 1;
+  return <div className="flex h-2.5 overflow-hidden rounded-full bg-slate-100">{STATUS_KEYS.map((k) => counts[k] ? <button key={k} onClick={onSeg ? () => onSeg(k) : undefined} title={`${counts[k]} ${TRACK_STATUS[k].label}`} className={`${TRACK_STATUS[k].dot} ${onSeg ? "cursor-pointer" : "cursor-default"}`} style={{ width: `${(counts[k] / sum) * 100}%` }} /> : null)}</div>;
+}
+function KpiCard({ label, value, sub, tone = "text-slate-900", onClick, children }) {
+  const cls = `rounded-xl border border-slate-200 bg-white p-3 ${onClick ? "text-left transition hover:border-slate-300 hover:shadow-sm" : ""}`;
+  const inner = <><div className="text-xs text-slate-400">{label}</div><div className={`mt-1 font-mono text-2xl font-medium ${tone}`}>{value}</div>{sub && <div className="mt-0.5 truncate text-xs text-slate-400">{sub}</div>}{children}</>;
+  return onClick ? <button onClick={onClick} className={cls}>{inner}</button> : <div className={cls}>{inner}</div>;
+}
+
+function HealthStrip({ items, onFocus }) {
+  const objs = items.filter((i) => i.level === "objective");
+  const inits = items.filter((i) => i.level === "initiative");
+  const acts = items.filter((i) => i.level === "activity");
+  const oc = statusCountsFromItems(objs);
+  const attn = oc.overdue + oc.blocked + oc.atrisk;
+  const withResult = inits.filter((i) => i.resultPct != null);
+  const avgTarget = withResult.length ? Math.round(withResult.reduce((s, i) => s + i.resultPct, 0) / withResult.length) : null;
+  const done = acts.filter((a) => a.status === "done").length;
+  const execPct = acts.length ? Math.round((done / acts.length) * 100) : 0;
+  const overdue = acts.filter((a) => a.status === "overdue").length;
+  const blocked = acts.filter((a) => a.status === "blocked").length;
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4">
-      <div className="mb-2 flex items-start justify-between gap-2">
-        <div><div className="font-mono text-2xl font-medium text-slate-900">{total}</div><div className="text-xs text-slate-400">{label}</div></div>
-        <div className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-slate-200 bg-white p-0.5">
-          {[["list", "List"], ["status", "Status"]].map(([k, l]) => <button key={k} onClick={() => setView(k)} className={`rounded px-2 py-1 text-xs font-medium ${view === k ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}>{l}</button>)}
-        </div>
-      </div>
-      {total === 0 ? <div className="py-3 text-center text-xs text-slate-400">{emptyLabel || "None in scope."}</div>
-        : view === "status" ? (
-          <div className="space-y-1.5">{statusRows.map((r) => <div key={r.label} className="flex items-center gap-2 text-xs"><span className={`h-2 w-2 rounded-full ${r.dot}`} /><span className="flex-1 text-slate-600">{r.label}</span><span className="font-mono text-slate-700">{r.count}</span></div>)}</div>
-        ) : (
-          <div className="max-h-48 space-y-1 overflow-y-auto">{listItems.map((it) => (
-            <div key={it.id} className={`flex items-center gap-1 rounded-md text-xs ${selectedId === it.id ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-50"}`}>
-              <button onClick={() => onSelectItem(it.id)} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${it.dot}`} /><span className="min-w-0 flex-1 truncate">{it.title}</span></button>
-              {onOpenItem && <button onClick={() => onOpenItem(it.id)} title="Open detail" className={`shrink-0 rounded p-1 mr-1 ${selectedId === it.id ? "text-slate-300 hover:text-white" : "text-slate-300 hover:text-slate-700"}`}><ArrowRight size={12} /></button>}
-            </div>
-          ))}</div>
-        )}
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <KpiCard label={objs.length === 1 ? "Objective" : "Objectives"} value={objs.length} sub={`${oc.ontrack} on track · ${attn} to watch`}>
+        <div className="mt-2"><SegBar counts={oc} total={objs.length} /></div>
+      </KpiCard>
+      <KpiCard label="Initiatives to target" value={avgTarget != null ? `${avgTarget}%` : "—"} sub="avg result vs target" tone="text-violet-700" />
+      <KpiCard label="Execution" value={`${execPct}%`} sub={`${done}/${acts.length} activities done`} tone="text-amber-700" />
+      <KpiCard label="Overdue" value={overdue} sub="activities past due" tone={overdue ? "text-rose-600" : "text-slate-900"} onClick={() => onFocus({ level: "activity", status: "overdue" })} />
+      <KpiCard label="Blocked" value={blocked} sub="need help — view" tone={blocked ? "text-rose-600" : "text-slate-900"} onClick={() => onFocus({ level: "activity", status: "blocked" })} />
     </div>
   );
 }
-const STATUS_ROWS_LABELS = [["green", "On track"], ["amber", "At risk"], ["red", "Blocked"]];
-function EnterpriseScorecard({ works, acts, me, onOpen }) {
-  const [selObjective, setSelObjective] = useState(null);
-  const [selInitiative, setSelInitiative] = useState(null);
-  const [selWork, setSelWork] = useState(null);
-  const [views, setViews] = useState({ objective: "list", initiative: "list", work: "list", activity: "status" });
-  const setView = (lvl, v) => setViews((p) => ({ ...p, [lvl]: v }));
-  const dotFor = (w) => RAG[nodeRag(works, acts, w.id)][0];
-  const statusRowsFor = (items) => { const c = { green: 0, amber: 0, red: 0 }; items.forEach((w) => c[nodeRag(works, acts, w.id)]++); return STATUS_ROWS_LABELS.map(([k, l]) => ({ label: l, count: c[k], dot: RAG[k][0] })); };
 
-  const scopedInitiatives = scopeInitiatives(works, acts, me);
-  const objectives = scopedObjectives(works, acts, me);
-  const initiatives = selObjective ? scopedInitiatives.filter((i) => i.parentId === selObjective) : scopedInitiatives;
-  const worksAtLevel = works.filter((w) => w.level === "work" && (selInitiative ? w.parentId === selInitiative : initiatives.some((i) => i.id === w.parentId)));
-  const scopeRootForActs = selWork || selInitiative || selObjective;
-  const activityWorkIds = new Set(scopeRootForActs ? subtreeIds(works, scopeRootForActs) : initiatives.flatMap((i) => subtreeIds(works, i.id)));
-  const activities = acts.filter((a) => activityWorkIds.has(a.workId) && a.status !== "cancelled");
-  const actDot = (a) => (a.status === "executed" ? "bg-blue-500" : isOverdue(a) ? "bg-rose-500" : a.blocked ? "bg-rose-400" : "bg-slate-400");
-
-  const toggle = (setter, cur, id) => setter(cur === id ? null : id);
-  const selectObjective = (id) => { toggle(setSelObjective, selObjective, id); setSelInitiative(null); setSelWork(null); };
-  const selectInitiative = (id) => { toggle(setSelInitiative, selInitiative, id); setSelWork(null); };
-  const selectWork = (id) => toggle(setSelWork, selWork, id);
-
+// A donut of the status split for one level. Whole donut → open that level in
+// the tracker; each count under it → filter to that status.
+function StatusDonut({ level, counts, total, onFocus, idx = 0 }) {
+  const R = 40, SW = 15, C = 2 * Math.PI * R;
+  const segs = STATUS_KEYS.filter((k) => counts[k] > 0);
+  let acc = 0;
+  const arcs = segs.map((k) => { const dash = (counts[k] / total) * C; const a = { k, dash, off: acc }; acc += dash; return a; });
+  // Vertical dividers: on the 2-col mobile grid, border the right column; on the
+  // 4-col grid (sm+), border every column after the first.
+  const divider = `${idx % 2 === 1 ? "border-l border-slate-200 " : ""}${idx > 0 ? "sm:border-l sm:border-slate-200" : ""}`;
   return (
-    <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      <ScorecardPanel label="Objectives" total={objectives.length} view={views.objective} setView={(v) => setView("objective", v)} selectedId={selObjective} onSelectItem={selectObjective} onOpenItem={onOpen} listItems={objectives.map((o) => ({ id: o.id, title: o.title, dot: dotFor(o) }))} statusRows={statusRowsFor(objectives)} emptyLabel="No objectives in scope." />
-      <ScorecardPanel label="Initiatives" total={initiatives.length} view={views.initiative} setView={(v) => setView("initiative", v)} selectedId={selInitiative} onSelectItem={selectInitiative} onOpenItem={onOpen} listItems={initiatives.map((o) => ({ id: o.id, title: o.title, dot: dotFor(o) }))} statusRows={statusRowsFor(initiatives)} emptyLabel={selObjective ? "No initiatives under this objective." : "No initiatives in scope."} />
-      <ScorecardPanel label="Work" total={worksAtLevel.length} view={views.work} setView={(v) => setView("work", v)} selectedId={selWork} onSelectItem={selectWork} onOpenItem={onOpen} listItems={worksAtLevel.map((o) => ({ id: o.id, title: o.title, dot: dotFor(o) }))} statusRows={statusRowsFor(worksAtLevel)} emptyLabel="No work items here yet." />
-      <ScorecardPanel label="Activities" total={activities.length} view={views.activity} setView={(v) => setView("activity", v)} selectedId={null} onSelectItem={(id) => { const a = activities.find((x) => x.id === id); if (a) onOpen(a.workId); }} listItems={activities.slice(0, 8).map((a) => ({ id: a.id, title: a.title, dot: actDot(a) }))} statusRows={[{ label: "Done", count: activities.filter((a) => a.status === "executed").length, dot: "bg-blue-500" }, { label: "Overdue", count: activities.filter(isOverdue).length, dot: "bg-rose-500" }, { label: "Blocked", count: activities.filter((a) => a.blocked && a.status !== "executed").length, dot: "bg-rose-400" }, { label: "Open", count: activities.filter((a) => a.status !== "executed").length, dot: "bg-slate-400" }]} emptyLabel="No activities here yet." />
+    <div className={`flex flex-col items-center px-2 ${divider}`}>
+      <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-medium text-slate-600"><span className={`h-2 w-2 rounded-full ${LEVEL_THEME[level].bar}`} />{LEVEL_PLURAL[level]}</div>
+      <button onClick={() => onFocus({ level, status: "all" })} title={`Open ${LEVEL_PLURAL[level]} in tracker`} className="relative transition hover:opacity-90">
+        <svg width="125" height="125" viewBox="0 0 100 100">
+          <g transform="rotate(-90 50 50)">
+            {total === 0 ? <circle r={R} cx="50" cy="50" fill="none" stroke="#e2e8f0" strokeWidth={SW} />
+              : arcs.map((a) => <circle key={a.k} r={R} cx="50" cy="50" fill="none" stroke={STATUS_HEX[a.k]} strokeWidth={SW} strokeDasharray={`${a.dash} ${C - a.dash}`} strokeDashoffset={-a.off} />)}
+          </g>
+          <text x="50" y="50" textAnchor="middle" dominantBaseline="central" className="fill-slate-800 font-mono" style={{ fontSize: 24, fontWeight: 500 }}>{total}</text>
+        </svg>
+      </button>
+      <div className="mt-1.5 flex max-w-[8rem] flex-wrap justify-center gap-x-2 gap-y-0.5 text-[11px]">
+        {segs.length === 0 && <span className="text-slate-300">none</span>}
+        {segs.map((k) => <button key={k} onClick={() => onFocus({ level, status: k })} title={`${TRACK_STATUS[k].label} — filter`} className="inline-flex items-center gap-1 text-slate-500 hover:text-slate-900"><span className={`h-2 w-2 rounded-full ${TRACK_STATUS[k].dot}`} />{counts[k]}</button>)}
+      </div>
     </div>
+  );
+}
+function LevelHealthChart({ items, onFocus }) {
+  const levels = ["objective", "initiative", "work", "activity"].filter((l) => items.some((i) => i.level === l));
+  return (
+    <Panel title="Portfolio health — status by level">
+      <div className="grid grid-cols-2 gap-x-2 gap-y-6 py-3 sm:grid-cols-4">
+        {levels.map((l, idx) => { const rowsL = items.filter((i) => i.level === l); return <StatusDonut key={l} idx={idx} level={l} counts={statusCountsFromItems(rowsL)} total={rowsL.length} onFocus={onFocus} />; })}
+      </div>
+      <div className="mt-4 flex flex-wrap justify-center gap-x-3 gap-y-1 border-t border-slate-100 pt-3 text-xs text-slate-400">{STATUS_KEYS.map((k) => <span key={k} className="inline-flex items-center gap-1"><span className={`h-2 w-2 rounded-full ${TRACK_STATUS[k].dot}`} />{TRACK_STATUS[k].label}</span>)}</div>
+    </Panel>
+  );
+}
+
+// Expandable Objective → Initiative → Work cascade: the "flow" that reads top-down.
+function ObjectiveFlow({ works, acts, me, onOpen }) {
+  const objectives = scopedObjectives(works, acts, me);
+  const scopedInits = scopeInitiatives(works, acts, me);
+  const [open, setOpen] = useState(() => new Set());
+  const toggle = (id) => setOpen((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const initsOf = (oid) => scopedInits.filter((i) => i.parentId === oid);
+  const worksOf = (iid) => works.filter((w) => w.level === "work" && w.parentId === iid);
+  if (!objectives.length) return null;
+  return (
+    <Panel title="Objective progress → initiatives → work">
+      <div className="space-y-2">
+        {objectives.map((o) => {
+          const om = computeMeters(works, acts, o.id); const inits = initsOf(o.id); const oOpen = open.has(o.id);
+          return (
+            <div key={o.id} className="overflow-hidden rounded-lg border border-slate-200">
+              <div className="flex items-center gap-2 p-2.5 sm:gap-3">
+                <button onClick={() => toggle(o.id)} className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><ChevronRight size={16} className={`transition-transform ${oOpen ? "rotate-90" : ""}`} /></button>
+                <button onClick={() => onOpen(o.id)} className="min-w-0 flex-1 text-left">
+                  <div className="flex items-center gap-2"><span className={`h-2 w-2 shrink-0 rounded-full ${LEVEL_THEME.objective.bar}`} /><span className="truncate text-sm font-medium text-slate-800">{o.title}</span></div>
+                  <div className="mt-0.5 truncate text-xs text-slate-400">{uFirst(o.ownerId)} · {inits.length} initiative{inits.length !== 1 ? "s" : ""}</div>
+                </button>
+                <div className="hidden w-24 shrink-0 sm:block"><div className="mb-0.5 flex justify-between text-[10px] text-slate-400"><span>done</span><span className="font-mono">{om.execution}%</span></div><MiniBar pct={om.execution} tone="bg-amber-500" /></div>
+                <div className="hidden w-24 shrink-0 md:block"><SegBar counts={statusCountsOfNodes(inits, works, acts)} total={inits.length} /></div>
+                <span className="shrink-0"><StatusTag status={nodeStatus(works, acts, o.id)} /></span>
+                {o.deadline && <span className="hidden shrink-0 lg:block"><DueChip date={o.deadline} small /></span>}
+              </div>
+              {oOpen && (
+                <div className="space-y-1 border-t border-slate-100 bg-slate-50/60 p-2">
+                  {!inits.length && <div className="px-2 py-1 text-xs text-slate-400">No initiatives in your scope.</div>}
+                  {inits.map((it) => {
+                    const im = computeMeters(works, acts, it.id); const wks = worksOf(it.id); const iOpen = open.has(it.id);
+                    return (
+                      <div key={it.id} className="overflow-hidden rounded-md border border-slate-200 bg-white">
+                        <div className="flex items-center gap-2 p-2 sm:gap-3">
+                          <button onClick={() => wks.length && toggle(it.id)} className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100"><ChevronRight size={14} className={`transition-transform ${iOpen ? "rotate-90" : ""} ${wks.length ? "" : "opacity-20"}`} /></button>
+                          <button onClick={() => onOpen(it.id)} className="min-w-0 flex-1 text-left">
+                            <div className="flex items-center gap-2"><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${LEVEL_THEME.initiative.bar}`} /><span className="truncate text-sm text-slate-700">{it.title}</span></div>
+                            <div className="mt-0.5 truncate text-xs text-slate-400">{it.result ? `${it.result.metric}: ${it.result.current}/${it.result.target} ${it.result.unit}` : `${wks.length} work item${wks.length !== 1 ? "s" : ""}`}</div>
+                          </button>
+                          {im.resultPct != null && <div className="hidden w-24 shrink-0 sm:block"><div className="mb-0.5 flex justify-between text-[10px] text-slate-400"><span>to target</span><span className="font-mono text-violet-700">{Math.round(im.resultPct)}%</span></div><MiniBar pct={im.resultPct} tone="bg-violet-500" /></div>}
+                          <div className="hidden w-24 shrink-0 md:block"><div className="mb-0.5 flex justify-between text-[10px] text-slate-400"><span>done</span><span className="font-mono">{im.execution}%</span></div><MiniBar pct={im.execution} tone="bg-amber-500" /></div>
+                          <span className="shrink-0"><StatusTag status={nodeStatus(works, acts, it.id)} /></span>
+                          {it.deadline && <span className="hidden shrink-0 lg:block"><DueChip date={it.deadline} small /></span>}
+                        </div>
+                        {iOpen && wks.length > 0 && (
+                          <div className="space-y-1 border-t border-slate-100 p-2">
+                            {wks.map((w) => { const wm = computeMeters(works, acts, w.id); const att = attentionCount(works, acts, w.id);
+                              return (
+                                <button key={w.id} onClick={() => onOpen(w.id)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-slate-50 sm:gap-3">
+                                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${LEVEL_THEME.work.bar}`} />
+                                  <span className="min-w-0 flex-1 truncate text-sm text-slate-600">{w.title}</span>
+                                  {att.overdue > 0 && <span className="shrink-0 rounded-full bg-rose-50 px-1.5 py-0.5 text-[10px] font-medium text-rose-700">{att.overdue} overdue</span>}
+                                  {att.blocked > 0 && <span className="shrink-0 rounded-full bg-rose-50 px-1.5 py-0.5 text-[10px] font-medium text-rose-700">{att.blocked} blocked</span>}
+                                  <span className="hidden w-20 shrink-0 sm:block"><MiniBar pct={wm.execution} tone="bg-teal-500" /></span>
+                                  <span className="shrink-0"><StatusTag status={nodeStatus(works, acts, w.id)} /></span>
+                                  {w.deadline && <span className="hidden shrink-0 lg:block"><DueChip date={w.deadline} small /></span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Panel>
+  );
+}
+
+// Per-level column sets: each level shows the metrics that matter for it and
+// names the parent it rolls up into, rather than one generic "Metric" column.
+const OWNER_CELL = (i, fallback) => i.ownerId ? <><Avatar id={i.ownerId} size={18} /><span className="truncate">{uFirst(i.ownerId)}</span></> : <span className="text-slate-300">{fallback}</span>;
+const GAP_BADGE = (i) => i.flags.gap ? <span className="ml-1 shrink-0 rounded bg-amber-50 px-1 text-[10px] font-medium text-amber-700">gap</span> : null;
+const TRACKER_COLS = {
+  objective: [
+    { label: "Owner", w: "hidden w-28 shrink-0 items-center gap-1.5 sm:flex", cell: (i) => OWNER_CELL(i, "—") },
+    { label: "Initiatives", w: "hidden w-24 shrink-0 text-right sm:block", cell: (i) => i.childCount },
+    { label: "Done", w: "hidden w-24 shrink-0 text-right sm:block", cell: (i) => `${i.execution}%` },
+  ],
+  initiative: [
+    { label: "Objective", w: "hidden w-44 shrink-0 truncate md:block", cell: (i) => i.parentTitle || "—" },
+    { label: "Owner", w: "hidden w-24 shrink-0 items-center gap-1.5 sm:flex", cell: (i) => OWNER_CELL(i, "—") },
+    { label: "To target", w: "hidden w-32 shrink-0 items-center justify-end gap-1 sm:flex", cell: (i) => i.result ? <span className="truncate">{i.result.current}/{i.result.target} {i.result.unit}{i.resultPct != null && <span className="ml-1 font-medium text-violet-700">{i.resultPct}%</span>}</span> : <span>—</span> },
+  ],
+  work: [
+    { label: "Initiative", w: "hidden w-44 shrink-0 truncate md:block", cell: (i) => i.parentTitle || "—" },
+    { label: "Owner", w: "hidden w-24 shrink-0 items-center gap-1.5 sm:flex", cell: (i) => OWNER_CELL(i, "—") },
+    { label: "Done", w: "hidden w-24 shrink-0 items-center justify-end gap-1 sm:flex", cell: (i) => <><span>{i.execution}%</span>{GAP_BADGE(i)}</> },
+  ],
+  activity: [
+    { label: "Work", w: "hidden w-44 shrink-0 truncate md:block", cell: (i) => i.parentTitle || "—" },
+    { label: "Assignee", w: "hidden w-28 shrink-0 items-center gap-1.5 sm:flex", cell: (i) => OWNER_CELL(i, "Unassigned") },
+    { label: "Duration", w: "hidden w-20 shrink-0 text-right sm:block", cell: (i) => i.hrs ? `${i.hrs}h` : "—" },
+  ],
+};
+function Tracker({ items, filter, setFilter, onOpen, title = "Tracker" }) {
+  const set = (patch) => setFilter((f) => ({ ...f, ...patch }));
+  const levels = ["objective", "initiative", "work", "activity"].filter((l) => items.some((i) => i.level === l));
+  const level = levels.includes(filter.level) ? filter.level : levels[0];
+  const byLevel = items.filter((i) => i.level === level);
+  const sc = statusCountsFromItems(byLevel);
+  const gapCount = byLevel.filter((i) => i.flags.gap).length;
+  const filtered = byLevel.filter((i) => {
+    if (filter.status !== "all" && i.status !== filter.status) return false;
+    if (filter.gap && !i.flags.gap) return false;
+    if (filter.dueBefore && (!i.due || i.due > filter.dueBefore)) return false;
+    if (filter.q) { const hay = `${i.title} ${i.parentTitle || ""} ${uName(i.ownerId)}`.toLowerCase(); if (!hay.includes(filter.q.toLowerCase())) return false; }
+    return true;
+  });
+  const sorted = [...filtered].sort((a, b) => {
+    const ar = a.status === "overdue" ? 0 : 1, br = b.status === "overdue" ? 0 : 1; if (ar !== br) return ar - br;
+    if (a.due && b.due) return a.due < b.due ? -1 : a.due > b.due ? 1 : 0;
+    if (a.due) return -1; if (b.due) return 1;
+    return 0;
+  });
+  const cols = TRACKER_COLS[level];
+  // Phones (<sm) hide the middle columns, so fold owner + the level's key metric
+  // into a compact meta line under the title.
+  const metricText = (i) => i.level === "activity" ? (i.hrs ? `${i.hrs}h` : "—")
+    : i.level === "initiative" ? (i.result ? `${i.result.current}/${i.result.target} ${i.result.unit}${i.resultPct != null ? ` · ${i.resultPct}%` : ""}` : `${i.execution}% done`)
+    : i.level === "objective" ? `${i.childCount} initiative${i.childCount !== 1 ? "s" : ""} · ${i.execution}% done`
+    : `${i.execution}% done`;
+  const showGap = level === "initiative" || level === "work";
+  const active = filter.status !== "all" || filter.gap || filter.dueBefore || filter.q;
+  return (
+    <Panel title={title} right={<span className="text-xs text-slate-400">{sorted.length} shown</span>}>
+      <div className="mb-3 flex flex-wrap items-center gap-1">
+        {levels.map((k) => <button key={k} onClick={() => set({ level: k, status: "all", gap: false })} className={`rounded-md px-2.5 py-1 text-xs font-medium ${level === k ? "bg-slate-900 text-white" : "border border-slate-200 text-slate-500 hover:bg-slate-50"}`}>{LEVEL_PLURAL[k]}<span className="ml-1 text-[10px] opacity-70">{items.filter((i) => i.level === k).length}</span></button>)}
+      </div>
+      <div className="mb-3 flex flex-wrap items-center gap-1.5">
+        {STATUS_KEYS.map((k) => <button key={k} onClick={() => set({ status: filter.status === k ? "all" : k, gap: false })} className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${filter.status === k ? `${TRACK_STATUS[k].soft} ${TRACK_STATUS[k].text} ring-1 ring-inset ring-current` : "bg-slate-50 text-slate-500 hover:bg-slate-100"}`}><span className={`h-1.5 w-1.5 rounded-full ${TRACK_STATUS[k].dot}`} />{TRACK_STATUS[k].label}<span className="opacity-60">{sc[k] || 0}</span></button>)}
+        {showGap && <button onClick={() => set({ gap: !filter.gap, status: "all" })} className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${filter.gap ? "bg-amber-50 text-amber-700 ring-1 ring-inset ring-current" : "bg-slate-50 text-slate-500 hover:bg-slate-100"}`}><Target size={11} /> Gap to target<span className="opacity-60">{gapCount}</span></button>}
+        <div className="ml-auto flex items-center gap-1.5">
+          <div className="relative"><Search size={13} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" /><input value={filter.q} onChange={(e) => set({ q: e.target.value })} placeholder="Search…" className="w-32 rounded-md border border-slate-200 py-1 pl-7 pr-2 text-xs outline-none focus:border-slate-400 sm:w-40" /></div>
+          <input type="date" value={filter.dueBefore} onChange={(e) => set({ dueBefore: e.target.value })} title="Show items due on or before this date" className="rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-500" />
+          {active && <button onClick={() => setFilter((f) => ({ ...f, status: "all", gap: false, dueBefore: "", q: "" }))} className="text-xs text-slate-400 hover:text-slate-700">clear</button>}
+        </div>
+      </div>
+      <div className="hidden items-center gap-3 border-b border-slate-200 px-2 pb-1.5 text-[10px] font-medium uppercase tracking-wide text-slate-400 sm:flex">
+        <span className="min-w-0 flex-1">{LEVEL_LABEL[level]}</span>
+        {cols.map((c, idx) => <span key={idx} className={c.w}>{c.label}</span>)}
+        <span className="w-24 shrink-0 text-right">Status</span><span className="w-20 shrink-0 text-right">Due</span>
+      </div>
+      <div className="max-h-[28rem] overflow-y-auto">
+        {!sorted.length && <div className="py-8 text-center text-sm text-slate-400">Nothing matches these filters.</div>}
+        {sorted.map((i) => (
+          <button key={i.id} onClick={() => onOpen(i.openId || i.id)} className="flex w-full items-center gap-3 border-b border-slate-100 px-2 py-2 text-left last:border-0 hover:bg-slate-50">
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm text-slate-800">{i.title}</span>
+              {i.parentTitle && <span className="block truncate text-xs text-slate-400 md:hidden">{i.parentTitle}</span>}
+              <span className="mt-0.5 flex items-center gap-1.5 truncate text-xs text-slate-400 sm:hidden">
+                {i.ownerId && <span className="inline-flex shrink-0 items-center gap-1"><Avatar id={i.ownerId} size={14} />{uFirst(i.ownerId)}</span>}
+                <span className="shrink-0">· {metricText(i)}</span>
+              </span>
+            </span>
+            {cols.map((c, idx) => <span key={idx} className={`${c.w} text-xs text-slate-500`}>{c.cell(i)}</span>)}
+            <span className="w-24 shrink-0 text-right"><StatusTag status={i.status} /></span>
+            <span className="w-20 shrink-0 text-right">{i.due ? <DueChip date={i.due} small /> : <span className="text-xs text-slate-300">—</span>}</span>
+          </button>
+        ))}
+      </div>
+    </Panel>
   );
 }
 
@@ -704,9 +987,13 @@ function Portfolio({ works, acts, crs, me, isOrg, onOpen, goApprovals, view, set
   return (
     <div>
       {reviewMode && isOrg && <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-800"><span className="flex items-center gap-1.5"><Pencil size={13} /> Review &amp; update mode — {view === "tree" ? "click any card in the tree" : "switch to Tree view and click any card"} to leave a remark, re-assign, or shift dates. Owners get nudged.</span><button onClick={() => setReviewMode(false)} className="rounded-md border border-violet-200 bg-white px-2 py-1 font-medium text-violet-700 hover:bg-violet-100">Exit</button></div>}
-      {me.level !== "member" && <div className="mb-4 flex items-center justify-end">
-        <div className="inline-flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white p-0.5">
-          <button onClick={() => setView("scorecard")} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium ${view === "tree" ? "text-slate-500 hover:bg-slate-50" : "bg-slate-900 text-white"}`}><LayoutGrid size={13} /> Scorecard</button>
+      {me.level !== "member" && <div className="mb-4 flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0">
+          <div className="text-lg font-medium text-slate-900">{me.level === "md" ? "Portfolio overview" : `Your function — ${me.fn}`}</div>
+          {view !== "tree" && <div className="mt-0.5 text-xs text-slate-400">{me.level === "md" ? "Health and progress up top; filter the full tracker below by level, status, owner or due date." : "Your initiatives and their work — health up top, filterable tracker below."}</div>}
+        </div>
+        <div className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-white p-0.5">
+          <button onClick={() => setView("scorecard")} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium ${view === "tree" ? "text-slate-500 hover:bg-slate-50" : "bg-slate-900 text-white"}`}><LayoutGrid size={13} /> Dashboard</button>
           <button onClick={() => setView("tree")} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium ${view === "tree" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}><ChevronRight size={13} className="rotate-90" /> Tree</button>
         </div>
       </div>}
@@ -717,60 +1004,68 @@ function Portfolio({ works, acts, crs, me, isOrg, onOpen, goApprovals, view, set
   );
 }
 
-function LeaderDashboard({ me, works, acts, rows, onOpen }) {
+function LeaderDashboard({ me, works, acts, onOpen }) {
   const md = me.level === "md";
+  const items = trackerRows(works, acts, me);
+  const [filter, setFilter] = useState({ level: "objective", status: "all", gap: false, dueBefore: "", q: "" });
+  const trackerRef = useRef(null);
+  const focusTracker = (patch) => { setFilter((f) => ({ level: f.level, status: "all", gap: false, dueBefore: "", q: "", ...patch })); setTimeout(() => trackerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0); };
   const initRows = scopeInitiatives(works, acts, me).map((w) => { const m = computeMeters(works, acts, w.id); const st = workStats(works, acts, w.id); return { w, m, st, rag: nodeRag(works, acts, w.id) }; });
-  const scopeInitiativeIds = new Set(initRows.map((r) => r.w.id));
   const capUsers = md ? USERS.filter((u) => u.level !== "md") : USERS.filter((u) => u.reports_to === me.id);
   return (
-    <div>
-      <div className="mb-1 text-lg font-medium text-slate-900">{md ? "Enterprise scorecard" : `Your function — ${me.fn}`}</div>
-      <div className="mb-2 text-xs text-slate-400">{md ? "Every objective, initiative, work and activity — pick one to drill into what's beneath it." : "Your initiatives, scoped to your function. Pick one to drill into work and activities."}</div>
-      <div className="mb-4"><LevelLegend /></div>
-      <EnterpriseScorecard works={works} acts={acts} me={me} onOpen={onOpen} />
-      <div className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
+    <div className="space-y-5">
+      <HealthStrip items={items} onFocus={focusTracker} />
+      <ObjectiveFlow works={works} acts={acts} me={me} onOpen={onOpen} />
+      <LevelHealthChart items={items} onFocus={focusTracker} />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {md ? <ByFunctionPanel initRows={initRows} /> : <TeamSnapshot user={me} acts={acts} />}
         <CapacityPanel users={capUsers} acts={acts} />
       </div>
-      <div className="mb-5"><SufficiencyByObjective works={works} acts={acts} me={me} /></div>
-      <div className="mb-5"><WorkReadinessPanel works={works} acts={acts} scopeInitiativeIds={scopeInitiativeIds} onOpen={onOpen} /></div>
-      <AttentionPanel rows={rows} works={works} acts={acts} onOpen={onOpen} />
+      <div ref={trackerRef}><Tracker items={items} filter={filter} setFilter={setFilter} onOpen={onOpen} /></div>
     </div>
   );
 }
 
 function MyWork({ me, works, acts, rows, onOpen }) {
+  const items = trackerRows(works, acts, me);
   const mine = acts.filter((a) => a.assigneeId === me.id && a.status !== "cancelled");
-  const done = mine.filter((a) => a.status === "executed").length; const overdue = mine.filter((a) => isOverdue(a)).length;
+  const done = mine.filter((a) => a.status === "executed").length; const overdue = mine.filter((a) => isOverdue(a)).length; const blocked = mine.filter((a) => a.blocked && a.status !== "executed").length;
   const scored = mine.filter((a) => a.deliverable); const avg = scored.length ? Math.round(scored.reduce((s, a) => s + a.deliverable.score, 0) / scored.length) : "—";
+  const [filter, setFilter] = useState({ level: "activity", status: "all", gap: false, dueBefore: "", q: "" });
+  const trackerRef = useRef(null);
+  const focusTracker = (patch) => { setFilter((f) => ({ level: f.level, status: "all", gap: false, dueBefore: "", q: "", ...patch })); setTimeout(() => trackerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0); };
   return (
-    <div>
-      <div className="mb-1 text-lg font-medium text-slate-900">My work</div>
-      <div className="mb-2 text-xs text-slate-400">You see only what you own or are assigned — not the enterprise portfolio. {me.title}.</div>
-      <div className="mb-4"><LevelLegend /></div>
-      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Tile label="Open activities" value={mine.length - done} />
-        <Tile label="Done" value={done} tone="text-emerald-600" />
-        <Tile label="Overdue" value={overdue} tone={overdue ? "text-rose-600" : undefined} />
-        <Tile label="Avg deliverable" value={typeof avg === "number" ? avg + "/100" : avg} tone="text-violet-700" />
+    <div className="space-y-5">
+      <div>
+        <div className="text-lg font-medium text-slate-900">My work</div>
+        <div className="mt-0.5 text-xs text-slate-400">Everything you own or are assigned — {me.title}. Health up top; filter the tracker below by status or due date.</div>
       </div>
-      <div className="mb-3 text-sm font-medium text-slate-700">Sub-works I'm on</div>
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        {rows.length === 0 && <div className="rounded-xl border border-dashed border-slate-200 bg-white p-8 text-center text-sm text-slate-400">Nothing assigned to you yet.</div>}
-        {rows.map((row) => { const { w, m } = row; const ct = LEVEL_THEME[w.level]; const myActs = acts.filter((a) => subtreeIds(works, w.id).includes(a.workId) && a.assigneeId === me.id && a.status !== "cancelled"); const myDone = myActs.filter((a) => a.status === "executed").length;
-          return (
-            <div key={w.id} className={`overflow-hidden rounded-xl border bg-white ${row.rag === "red" ? "border-rose-200" : "border-slate-200"}`}>
-              <div className={`h-1 ${ct.bar}`} />
-              <button onClick={() => onOpen(w.id)} className="block w-full p-4 text-left hover:bg-slate-50">
-                <div className="flex items-start justify-between gap-2"><LevelChip level={w.level} /><StatusPill rag={row.rag} /></div>
-                <div className="mt-1.5 truncate text-sm font-medium text-slate-800">{w.title}</div>
-                <div className="mt-0.5 text-xs text-slate-500">My part: {myDone}/{myActs.length} activities done</div>
-                <div className="mt-3"><ProgressPair planning={m.planning} execution={m.execution} /></div>
-              </button>
-            </div>
-          );
-        })}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <KpiCard label="Open activities" value={mine.length - done} />
+        <KpiCard label="Done" value={done} tone="text-emerald-600" />
+        <KpiCard label="Overdue" value={overdue} tone={overdue ? "text-rose-600" : "text-slate-900"} sub={overdue ? "view →" : undefined} onClick={() => focusTracker({ level: "activity", status: "overdue" })} />
+        <KpiCard label={blocked ? "Blocked" : "Avg deliverable"} value={blocked ? blocked : (typeof avg === "number" ? avg + "/100" : avg)} tone={blocked ? "text-rose-600" : "text-violet-700"} sub={blocked ? "view →" : undefined} onClick={blocked ? () => focusTracker({ level: "activity", status: "blocked" }) : undefined} />
       </div>
+      <div>
+        <div className="mb-2 text-sm font-medium text-slate-700">Work I'm on</div>
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          {rows.length === 0 && <div className="rounded-xl border border-dashed border-slate-200 bg-white p-8 text-center text-sm text-slate-400">Nothing assigned to you yet.</div>}
+          {rows.map((row) => { const { w, m } = row; const ct = LEVEL_THEME[w.level]; const myActs = acts.filter((a) => subtreeIds(works, w.id).includes(a.workId) && a.assigneeId === me.id && a.status !== "cancelled"); const myDone = myActs.filter((a) => a.status === "executed").length;
+            return (
+              <div key={w.id} className={`overflow-hidden rounded-xl border bg-white ${row.rag === "red" ? "border-rose-200" : "border-slate-200"}`}>
+                <div className={`h-1 ${ct.bar}`} />
+                <button onClick={() => onOpen(w.id)} className="block w-full p-4 text-left hover:bg-slate-50">
+                  <div className="flex items-start justify-between gap-2"><LevelChip level={w.level} /><StatusPill rag={row.rag} /></div>
+                  <div className="mt-1.5 truncate text-sm font-medium text-slate-800">{w.title}</div>
+                  <div className="mt-0.5 text-xs text-slate-500">My part: {myDone}/{myActs.length} activities done</div>
+                  <div className="mt-3"><ProgressPair planning={m.planning} execution={m.execution} /></div>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div ref={trackerRef}><Tracker items={items} filter={filter} setFilter={setFilter} onOpen={onOpen} title="My items — tracker" /></div>
     </div>
   );
 }
@@ -785,25 +1080,6 @@ function BracketTree({ roots, works, acts, onOpen, reviewMode, setReviewMode, on
   const [expanded, setExpanded] = useState(init);
   const toggle = (id) => setExpanded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
-  // Personal manual layout (drag-to-rearrange), saved per user — sparse, only
-  // nodes the user actually dragged get an entry; everything else auto-layouts.
-  const [customPos, setCustomPos] = useState({});
-  const [rearrange, setRearrange] = useState(false);
-  const dragRef = useRef(null);
-  const justDragged = useRef(false);
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(`cadence:treeLayout:${userId}`);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      const valid = {};
-      Object.entries(parsed.positions || {}).forEach(([id, p]) => { if (works.some((w) => w.id === id) && Number.isFinite(p?.x) && Number.isFinite(p?.y)) valid[id] = p; });
-      setCustomPos(valid);
-    } catch { /* ignore corrupt/missing data */ }
-  }, [userId]);
-  const saveLayout = () => localStorage.setItem(`cadence:treeLayout:${userId}`, JSON.stringify({ v: 1, positions: customPos }));
-  const resetLayout = () => { setCustomPos({}); localStorage.removeItem(`cadence:treeLayout:${userId}`); };
-
   // ----- layout pass: each visible node gets a row (depth) and an x-slot -----
   const nodes = {}; let leaf = 0; let maxDepth = 0;
   const place = (id, depth) => {
@@ -816,15 +1092,11 @@ function BracketTree({ roots, works, acts, onOpen, reviewMode, setReviewMode, on
     return x;
   };
   rootIds.forEach((r) => place(r, 0));
-  const posFor = (id) => (customPos[id] ? customPos[id] : { x: nodes[id].x, y: nodes[id].depth * ROWGAP });
+  const posFor = (id) => ({ x: nodes[id].x, y: nodes[id].depth * ROWGAP });
   const edges = [];
   Object.keys(nodes).forEach((id) => { if (!expanded.has(id)) return; childIds(id).forEach((cid) => { if (nodes[cid]) edges.push([id, cid]); }); });
-  const autoW = Math.max(leaf, 1) * COLGAP + CARDW + 24;
-  const autoH = maxDepth * ROWGAP + CARDH + 24;
-  const customXs = Object.values(customPos).map((p) => p.x + CARDW + 24);
-  const customYs = Object.values(customPos).map((p) => p.y + CARDH + 24);
-  const W = Math.max(autoW, ...customXs, 0);
-  const H = Math.max(autoH, ...customYs, 0);
+  const W = Math.max(leaf, 1) * COLGAP + CARDW + 24;
+  const H = maxDepth * ROWGAP + CARDH + 24;
 
   return (
     <div>
@@ -833,13 +1105,9 @@ function BracketTree({ roots, works, acts, onOpen, reviewMode, setReviewMode, on
         <div className="flex flex-wrap gap-1">
           <button onClick={() => setExpanded(new Set(allWorkIds))} className={btnLight}>Expand all</button>
           <button onClick={() => setExpanded(new Set(rootIds))} className={btnLight}>Collapse</button>
-          <button onClick={() => setRearrange((r) => !r)} className={rearrange ? "inline-flex items-center gap-1.5 rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white" : btnLight}>{rearrange ? "Done rearranging" : "Rearrange"}</button>
-          {rearrange && <button onClick={saveLayout} className={btnLight}>Save layout</button>}
-          {rearrange && <button onClick={resetLayout} className={btnLight}>Undo / reset</button>}
         </div>
       </div>
-      {reviewMode && <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-800"><span className="flex items-center gap-1.5"><Pencil size={13} /> Review mode — click any initiative, work or sub-work to leave a remark &amp; nudge its owners.</span><button onClick={() => setReviewMode(false)} className="rounded-md border border-violet-200 bg-white px-2 py-1 font-medium text-violet-700 hover:bg-violet-100">Exit</button></div>}
-      {rearrange && <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">Drag any card to arrange the tree your way, then "Save layout" to keep it — "Undo / reset" reverts everyone's default auto-layout.</div>}
+      {reviewMode && <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-800"><span className="flex items-center gap-1.5"><Pencil size={13} /> Review mode — click any initiative or work to leave a remark &amp; nudge its owners.</span><button onClick={() => setReviewMode(false)} className="rounded-md border border-violet-200 bg-white px-2 py-1 font-medium text-violet-700 hover:bg-violet-100">Exit</button></div>}
       <div className="overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-4">
         <div className="relative" style={{ width: W, height: H }}>
           <svg className="absolute inset-0" width={W} height={H}>
@@ -851,12 +1119,9 @@ function BracketTree({ roots, works, acts, onOpen, reviewMode, setReviewMode, on
             return (
               <div
                 key={id}
-                style={{ position: "absolute", left, top, width: CARDW, height: CARDH, touchAction: rearrange ? "none" : undefined }}
-                onPointerDown={(e) => { if (!rearrange) return; e.currentTarget.setPointerCapture(e.pointerId); const p = posFor(id); dragRef.current = { id, startPx: e.clientX, startPy: e.clientY, origX: p.x, origY: p.y, moved: false }; }}
-                onPointerMove={(e) => { const d = dragRef.current; if (!d || d.id !== id) return; const dx = e.clientX - d.startPx, dy = e.clientY - d.startPy; if (Math.abs(dx) > 3 || Math.abs(dy) > 3) d.moved = true; if (!d.moved) return; setCustomPos((prev) => ({ ...prev, [id]: { x: Math.max(0, d.origX + dx), y: Math.max(0, d.origY + dy) } })); }}
-                onPointerUp={() => { const d = dragRef.current; dragRef.current = null; if (d && d.id === id && d.moved) justDragged.current = true; }}
-                onClick={() => { if (rearrange && justDragged.current) { justDragged.current = false; return; } if (canRemark) onRemark(w); else if (hasKids) toggle(id); }}
-                className={`relative overflow-hidden rounded-lg border bg-white ${rag === "red" ? "border-rose-200 ring-1 ring-rose-100" : "border-slate-200"} ${rearrange ? "cursor-grab active:cursor-grabbing" : canRemark ? "cursor-pointer ring-1 ring-violet-200 hover:ring-violet-400" : hasKids ? "cursor-pointer hover:shadow-sm" : ""}`}
+                style={{ position: "absolute", left, top, width: CARDW, height: CARDH }}
+                onClick={() => { if (canRemark) onRemark(w); else if (hasKids) toggle(id); }}
+                className={`relative overflow-hidden rounded-lg border bg-white ${rag === "red" ? "border-rose-200 ring-1 ring-rose-100" : "border-slate-200"} ${canRemark ? "cursor-pointer ring-1 ring-violet-200 hover:ring-violet-400" : hasKids ? "cursor-pointer hover:shadow-sm" : ""}`}
               >
                 <span className={`absolute inset-y-0 left-0 w-1 ${th.bar}`} />
                 <div className="flex h-full flex-col justify-center gap-1 pl-3 pr-2">
@@ -864,15 +1129,15 @@ function BracketTree({ roots, works, acts, onOpen, reviewMode, setReviewMode, on
                     <span className={`h-2 w-2 shrink-0 rounded-full ${th.bar}`} />
                     <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-800">{w.title}</span>
                     {w.recurring && <span className="shrink-0 rounded bg-violet-100 px-1 text-xs font-medium text-violet-700" title="recurring">↻ {w.recurring.cadence}</span>}
-                    {hasKids && !rearrange && <span onClick={(e) => { e.stopPropagation(); toggle(id); }} className="shrink-0 cursor-pointer rounded p-0.5 hover:bg-slate-100"><ChevronRight size={13} className={`text-slate-400 transition-transform ${open ? "rotate-90" : ""}`} /></span>}
+                    {hasKids && <span onClick={(e) => { e.stopPropagation(); toggle(id); }} className="shrink-0 cursor-pointer rounded p-0.5 hover:bg-slate-100"><ChevronRight size={13} className={`text-slate-400 transition-transform ${open ? "rotate-90" : ""}`} /></span>}
                   </div>
-                  <div className="flex items-center gap-1 text-xs text-slate-500"><Avatar id={w.ownerId} size={14} /><span className="min-w-0 truncate">{uFirst(w.ownerId)}</span>{w.result && <span className={`shrink-0 font-mono ${th.text}`}>· {m.resultPct != null ? Math.round(m.resultPct) + "%" : "—"}</span>}</div>
+                  <div className="flex items-center gap-1 text-xs text-slate-500"><Avatar id={w.ownerId} size={14} /><span className="min-w-0 truncate">{uFirst(w.ownerId)}</span>{w.result && <span className={`shrink-0 font-mono ${th.text}`}>· {m.resultPct != null ? Math.round(m.resultPct) + "%" : "—"}</span>}{w.deadline && <span className="ml-auto shrink-0"><DueChip date={w.deadline} small /></span>}</div>
                   <div className="flex items-center gap-1.5 text-xs">
                     <span className="text-teal-600">Plan {m.planning}%</span>
                     <span className="text-amber-600">Done {m.execution}%</span>
                     {catt.blocked > 0 && <span className="text-rose-600">· {catt.blocked} blk</span>}
                     <span className={`ml-auto h-2 w-2 shrink-0 rounded-full ${RAG[rag][0]}`} title={RAG[rag][3]} />
-                    {!rearrange && <button onClick={(e) => { e.stopPropagation(); onOpen(id); }} className="shrink-0 rounded p-0.5 text-slate-300 hover:text-slate-700" title="Open detail"><ArrowRight size={12} /></button>}
+                    <button onClick={(e) => { e.stopPropagation(); onOpen(id); }} className="shrink-0 rounded p-0.5 text-slate-300 hover:text-slate-700" title="Open detail"><ArrowRight size={12} /></button>
                   </div>
                 </div>
               </div>
@@ -880,15 +1145,97 @@ function BracketTree({ roots, works, acts, onOpen, reviewMode, setReviewMode, on
           })}
         </div>
       </div>
-      <div className="mt-2 px-1 text-xs text-slate-400">Shows Objective → Initiative → Work → Sub-work, top to bottom. Click a card to branch it out · ↻ = recurring work · the arrow opens full detail · scroll for deep or wide branches.</div>
+      <div className="mt-2 px-1 text-xs text-slate-400">Shows Objective → Initiative → Work → Activity, top to bottom. Click a card to branch it out · ↻ = recurring work · the arrow opens full detail · scroll for deep or wide branches.</div>
     </div>
   );
 }
 
+// Kanban board of activities — drag a card between columns to change its status.
+// Only the assignee (owner) or an org leader (exec) can move a card.
+function ActivitiesKanban({ acts, canMove, onMove, onOpen }) {
+  const [dragId, setDragId] = useState(null);
+  const cols = [
+    { key: "todo", label: "To do", cls: "bg-slate-400", match: (a) => a.status !== "executed" && !a.inProgress && !a.onHold },
+    { key: "inprogress", label: "In progress", cls: "bg-amber-500", match: (a) => a.status !== "executed" && a.inProgress && !a.onHold },
+    { key: "hold", label: "On hold", cls: "bg-slate-400", match: (a) => a.status !== "executed" && a.onHold },
+    { key: "done", label: "Done", cls: "bg-emerald-500", match: (a) => a.status === "executed" },
+  ];
+  const patchFor = (a, key) => key === "todo" ? { status: "planned", inProgress: false, onHold: false }
+    : key === "inprogress" ? { status: "planned", inProgress: true, onHold: false }
+    : key === "hold" ? { status: "planned", inProgress: false, onHold: true }
+    : { status: "executed", inProgress: false, onHold: false, actualHrs: a.actualHrs != null ? a.actualHrs : a.plannedHrs };
+  const drop = (key) => { const a = acts.find((x) => x.id === dragId); setDragId(null); if (a && canMove(a) && !cols.find((c) => c.key === key).match(a)) onMove(a.id, patchFor(a, key)); };
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {cols.map((col) => { const items = acts.filter(col.match);
+        return (
+          <div key={col.key} onDragOver={(e) => e.preventDefault()} onDrop={() => drop(col.key)} className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+            <div className="mb-2 flex items-center gap-1.5 px-1 text-xs font-medium text-slate-500"><span className={`h-2 w-2 rounded-full ${col.cls}`} /> {col.label} <span className="ml-auto rounded-full bg-white px-1.5 text-slate-400">{items.length}</span></div>
+            <div className="min-h-[3rem] space-y-2">
+              {items.map((a) => { const mine = canMove(a); const over = isOverdue(a); const Icon = ACT_ICON[a.actType] || User;
+                return (
+                  <div key={a.id} draggable={mine} onDragStart={() => setDragId(a.id)} onDragEnd={() => setDragId(null)} className={`rounded-md border bg-white p-2 ${a.blocked ? "border-rose-300" : over ? "border-rose-200" : "border-slate-200"} ${mine ? "cursor-grab active:cursor-grabbing hover:shadow-sm" : ""}`}>
+                    <div className="flex items-start gap-1.5"><Icon size={13} className="mt-0.5 shrink-0 text-slate-400" /><span className="min-w-0 flex-1 text-sm text-slate-800">{a.title}</span></div>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5 pl-5 text-xs text-slate-400">
+                      {a.assigneeId ? <span className="inline-flex items-center gap-1"><Avatar id={a.assigneeId} size={13} /> {uFirst(a.assigneeId)}</span> : <span className="text-amber-700">Unassigned</span>}
+                      <span className={over ? "text-rose-600" : ""}>· {a.date ? fmtFull(parseISO(a.date)) : "no date"}</span>
+                      <span>· {a.plannedHrs}h</span>
+                    </div>
+                    {a.deliverable && <div className="mt-1 pl-5 text-xs text-amber-600">deliverable {a.deliverable.score}/100</div>}
+                  </div>
+                );
+              })}
+              {items.length === 0 && <div className="rounded-md border border-dashed border-slate-200 py-3 text-center text-xs text-slate-300">—</div>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+// Compact result-vs-target strip, shown inside the header card (not a big box).
+function ResultInline({ work, m, isOrg, patchWork }) {
+  const [edit, setEdit] = useState(false); const [val, setVal] = useState(work.result.current); const rt = work.result;
+  return (
+    <div className="mt-4 rounded-lg border border-slate-100 bg-slate-50 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <div className="min-w-0 text-sm text-slate-700"><span className="text-xs font-medium uppercase tracking-wide text-slate-400">Result</span> <span className="ml-1">{rt.metric}: <span className="font-mono font-medium text-slate-900">{rt.current}</span> <span className="text-xs text-slate-400">of {rt.target} {rt.unit}</span></span></div>
+        <div className="flex items-center gap-2">{m.resultPct != null && <span className="font-mono text-sm font-medium text-violet-700">{Math.round(m.resultPct)}%</span>}{isOrg && <button onClick={() => setEdit(!edit)} className="text-xs font-medium text-violet-600">{edit ? "close" : "update"}</button>}</div>
+      </div>
+      {m.resultPct != null && <div className="mt-2 h-2 overflow-hidden rounded-full bg-violet-100"><div className="h-full rounded-full bg-violet-500" style={{ width: `${m.resultPct}%` }} /></div>}
+      {edit && <div className="mt-2 flex items-center gap-2"><input type="number" value={val} onChange={(e) => setVal(e.target.value)} className="w-24 rounded-md border border-slate-200 px-2 py-1 text-sm" /><button onClick={() => { patchWork(work.id, { result: { ...rt, current: Number(val) } }); setEdit(false); }} className={btnDark}>Save</button></div>}
+    </div>
+  );
+}
+// A single "AI actions" dropdown holding the level-appropriate tools. Each item
+// runs its handler (which opens a popup for AI results, or a modal / inline op).
+function AiActionsMenu({ items, busy }) {
+  const [open, setOpen] = useState(false);
+  if (!items.length) return null;
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen((o) => !o)} disabled={!!busy} className="inline-flex items-center gap-1.5 rounded-md border border-indigo-200 bg-indigo-50 px-2.5 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50">
+        {busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} AI actions <ChevronRight size={12} className={`transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 z-20 mt-1 w-56 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+            {items.map((it) => { const Icon = it.icon; return (
+              <button key={it.key} onClick={() => { setOpen(false); it.onClick(); }} disabled={!!it.disabled} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                <Icon size={14} className="shrink-0 text-indigo-600" /> <span className="flex-1">{it.label}</span>
+              </button>
+            ); })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 function NodeView({ nodeId, user, works, acts, crs, teams, isOrg, busy, setBusy, flash, patchAct, patchWork, store, onOpen, onRemark, goApprovals }) {
   const node = works.find((w) => w.id === nodeId);
   const [insight, setInsight] = useState(null);
-  const [modify, setModify] = useState(false); const [addUn, setAddUn] = useState(false); const [deliv, setDeliv] = useState(null); const [edit, setEdit] = useState(null); const [confirmDel, setConfirmDel] = useState(null); const [addChild, setAddChild] = useState(false); const [suggest, setSuggest] = useState(null);
+  const [modify, setModify] = useState(false); const [addUn, setAddUn] = useState(false); const [deliv, setDeliv] = useState(null); const [edit, setEdit] = useState(null); const [confirmDel, setConfirmDel] = useState(null); const [addChild, setAddChild] = useState(false); const [suggest, setSuggest] = useState(null); const [blockerOpen, setBlockerOpen] = useState(false); const [approvalsOpen, setApprovalsOpen] = useState(false); const [childView, setChildView] = useState("cards");
   if (!node) return <button onClick={() => onOpen(null)} className="text-sm text-slate-500">← Portfolio</button>;
   const childLevel = CHILD_LEVEL[node.level]; const childLabel = childLevel === "activity" ? "task" : (LEVEL_LABEL[childLevel] || "").toLowerCase();
   const team = node.level === "initiative" && node.teamId ? (teams || []).find((t) => t.id === node.teamId) : null;
@@ -909,7 +1256,7 @@ function NodeView({ nodeId, user, works, acts, crs, teams, isOrg, busy, setBusy,
     const ids = subtreeIds(works, node.id); const leaves = works.filter((w) => ids.includes(w.id) && !works.some((x) => x.parentId === w.id));
     const empty = leaves.filter((l) => !acts.some((a) => a.workId === l.id)); if (!empty.length) return flash("Every branch already has activities.");
     setBusy("expand");
-    try { const raw = await aiComplete('For each sub-work, 1-3 activities. Return ONLY JSON: {"fills":[{"title":<given>,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}', `Parent "${node.title}". Sub-works: ${JSON.stringify(empty.map((e) => e.title))}`); const fills = parseJSON(raw).fills || []; const add = []; fills.forEach((f) => { const lf = empty.find((l) => l.title === f.title) || empty[0]; (f.activities || []).forEach((ac) => add.push({ id: nid("a"), workId: lf.id, title: ac.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" })); }); if (add.length) store.addActs(add); flash("AI filled the missing branches."); } catch { flash("AI unavailable."); }
+    try { const raw = await aiComplete('For each work, 1-3 activities. Return ONLY JSON: {"fills":[{"title":<given>,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}', `Parent "${node.title}". Empty works: ${JSON.stringify(empty.map((e) => e.title))}`); const fills = parseJSON(raw).fills || []; const add = []; fills.forEach((f) => { const lf = empty.find((l) => l.title === f.title) || empty[0]; (f.activities || []).forEach((ac) => add.push({ id: nid("a"), workId: lf.id, title: ac.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" })); }); if (add.length) store.addActs(add); flash("AI filled the missing branches."); } catch { flash("AI unavailable."); }
     setBusy(null);
   };
   const doInsight = async () => { setBusy("insight"); setInsight(null); try { setInsight(await AI.insight(node.title, m)); } catch { setInsight({ read: `${Math.round(m.completion)}% complete.`, action: m.stuck ? `Unblock "${m.stuck}".` : "Schedule remaining." }); } setBusy(null); };
@@ -924,28 +1271,18 @@ function NodeView({ nodeId, user, works, acts, crs, teams, isOrg, busy, setBusy,
   };
 
   const closeResults = () => { setInsight(null); setSuggest(null); };
-  const toolButtons = node.level === "objective" ? (
-    <>
-      <button onClick={doSuggest} disabled={!!busy} title="Suggest initiatives" className={btnLight}>{busy === "suggest" ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}</button>
-      <button onClick={doInsight} disabled={!!busy} title="Where does this stand" className={btnLight}>{busy === "insight" ? <Loader2 size={14} className="animate-spin" /> : <Gauge size={14} />}</button>
-    </>
-  ) : (
-    <>
-      <button onClick={autoAssign} disabled={!!busy} title="Auto-assign" className={btnLight}><Wand2 size={14} /></button>
-      <button onClick={expand} disabled={!!busy} title="Fill missing" className={btnLight}>{busy === "expand" ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}</button>
-      <button onClick={doInsight} disabled={!!busy} title="Where do I stand" className={btnLight}>{busy === "insight" ? <Loader2 size={14} className="animate-spin" /> : <Gauge size={14} />}</button>
-      <button onClick={() => setModify(true)} disabled={!!busy} title="Modify plan" className={btnLight}><Pencil size={14} /></button>
-      <button onClick={() => setAddUn(true)} disabled={!!busy} title="Unplanned activity" className={btnLight}><Plus size={14} /></button>
-      {(node.level === "work" || node.level === "subwork") && <button onClick={() => setDeliv(node)} title="Deliverable" className={btnLight}>{node.deliverable ? <Star size={14} className="text-amber-500" /> : <FileText size={14} />}</button>}
-    </>
-  );
-  const resultsPanel = (insight || suggest) && (
-    <div className="mt-4 rounded-lg border border-violet-200 bg-violet-50 p-3">
-      <div className="mb-1 flex items-center justify-between"><span className="flex items-center gap-1.5 text-xs font-medium text-violet-800"><Sparkles size={13} /> AI</span><button onClick={closeResults} className="text-violet-400 hover:text-violet-700"><X size={13} /></button></div>
-      {insight && <div className="space-y-1 text-sm"><p className="text-slate-700">{insight.read}</p><p className="text-violet-800"><span className="font-medium">Next: </span>{insight.action}</p></div>}
-      {suggest && <div className="space-y-1">{suggest.length === 0 && <div className="text-sm text-slate-500">No new suggestions.</div>}{suggest.map((s, i) => <div key={i} className="flex items-center gap-2 rounded-md border border-violet-100 bg-white px-3 py-1.5 text-sm"><span className="min-w-0 flex-1 truncate text-slate-700">{s.title}</span><Chip tone="blue">{s.type}</Chip><button onClick={() => addSuggested(s)} className="shrink-0 rounded bg-slate-900 px-2 py-1 text-xs font-medium text-white hover:bg-slate-700">Add</button></div>)}</div>}
-    </div>
-  );
+  const aiItems = node.level === "objective" ? [
+    { key: "suggest", label: "Suggest initiatives", icon: Wand2, onClick: doSuggest },
+    { key: "insight", label: "Where does this stand", icon: Gauge, onClick: doInsight },
+  ] : [
+    { key: "auto", label: "Auto-assign", icon: Wand2, onClick: autoAssign },
+    { key: "fill", label: "Fill missing activities", icon: Plus, onClick: expand },
+    { key: "insight", label: "Where do I stand", icon: Gauge, onClick: doInsight },
+    { key: "modify", label: "Modify plan", icon: Pencil, onClick: () => setModify(true) },
+    { key: "unplanned", label: "Add unplanned activity", icon: Plus, onClick: () => setAddUn(true) },
+    ...(node.level === "work" ? [{ key: "deliv", label: node.deliverable ? `Deliverable (${node.deliverable.score}/100)` : "Attach deliverable", icon: FileText, onClick: () => setDeliv(node) }] : []),
+  ];
+  const blockerCount = att.blocked + att.overdue;
   const headerBlock = (
     <div className="p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -959,22 +1296,31 @@ function NodeView({ nodeId, user, works, acts, crs, teams, isOrg, busy, setBusy,
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-          {isOrg && toolButtons}
+          {blockerCount > 0 && issue && <button onClick={() => setBlockerOpen(true)} title="Attention needed — click for the root cause" className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-2 text-xs font-medium text-rose-700 hover:bg-rose-100"><AlertTriangle size={13} /> {att.blocked > 0 ? `${att.blocked} blocked` : ""}{att.blocked > 0 && att.overdue > 0 ? " · " : ""}{att.overdue > 0 ? `${att.overdue} overdue` : ""}</button>}
+          {isOrg && myCRs.length > 0 && <button onClick={() => setApprovalsOpen(true)} title="Plan changes awaiting your approval" className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-2 text-xs font-medium text-amber-800 hover:bg-amber-100"><ClipboardCheck size={13} /> {myCRs.length} approval{myCRs.length > 1 ? "s" : ""}</button>}
+          {isOrg && <AiActionsMenu items={aiItems} busy={busy} />}
           {canRemark && <button onClick={() => onRemark(node)} title="Remark & update" className="inline-flex items-center gap-1 rounded-md border border-violet-200 bg-white px-2 py-2 text-xs font-medium text-violet-700 hover:bg-violet-50"><Pencil size={12} /></button>}
           <StatusPill rag={rag} />
         </div>
       </div>
       <div className="mt-4 max-w-md"><ProgressPair planning={m.planning} execution={m.execution} size="lg" /></div>
       <div className="mt-3 text-xs text-slate-500">{!leaf ? `${children.length} ${CHILD_LABEL[node.level]} inside · ` : ""}{st.done}/{st.total} activities done{st.overdue > 0 ? ` · ${st.overdue} overdue` : ""}</div>
-      {resultsPanel}
+      {node.result && <ResultInline work={node} m={m} isOrg={isOrg} patchWork={patchWork} />}
     </div>
   );
   const insideDivider = (
-    <div className="mb-3 mt-2 flex items-center gap-2">
+    <div className="mb-3 mt-2 flex flex-wrap items-center gap-2">
       <span className={`h-2.5 w-2.5 rounded-full ${leaf ? LEVEL_THEME.activity.bar : LEVEL_THEME[CHILD_LEVEL[node.level]].bar}`} />
       <span className="text-sm font-medium text-slate-700">Inside — {leaf ? `${nodeActs.length} ${nodeActs.length === 1 ? "activity" : "activities"}` : `${children.length} ${CHILD_LABEL[node.level]}`}</span>
       <span className="hidden text-xs text-slate-400 sm:inline">{leaf ? "the actual tasks to execute" : "click any to drill in one level"}</span>
       <div className="h-px flex-1 bg-slate-200" />
+      {!leaf ? <div className="inline-flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white p-0.5">
+        <button onClick={() => setChildView("cards")} className={`rounded-md px-2 py-1 ${childView === "cards" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`} title="Cards"><LayoutGrid size={13} /></button>
+        <button onClick={() => setChildView("list")} className={`rounded-md px-2 py-1 ${childView === "list" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`} title="List / table"><ClipboardList size={13} /></button>
+      </div> : <div className="inline-flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white p-0.5">
+        <button onClick={() => setChildView("list")} className={`rounded-md px-2 py-1 ${childView !== "kanban" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`} title="List"><ClipboardList size={13} /></button>
+        <button onClick={() => setChildView("kanban")} className={`rounded-md px-2 py-1 ${childView === "kanban" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`} title="Kanban board"><LayoutGrid size={13} /></button>
+      </div>}
       {canCreate && <button onClick={() => setAddChild(true)} className={btnLight}><Plus size={14} /> Add {childLabel}</button>}
     </div>
   );
@@ -1006,82 +1352,105 @@ function NodeView({ nodeId, user, works, acts, crs, teams, isOrg, busy, setBusy,
       })}
     </div>
   );
-  const isObjectiveWithChildren = node.level === "objective" && !leaf;
-  const alertsStack = (
-    <div className="space-y-4">
-      {(att.blocked + att.overdue) > 0 && issue && (
-        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
-          <div className="flex items-start gap-2.5">
-            <AlertTriangle size={16} className="mt-0.5 shrink-0 text-rose-500" />
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-rose-800">Heads-up — {att.blocked > 0 ? `${att.blocked} blocked` : ""}{att.blocked > 0 && att.overdue > 0 ? " and " : ""}{att.overdue > 0 ? `${att.overdue} overdue` : ""} deeper down</div>
-              <div className="mt-0.5 text-xs text-rose-700">That's why this {LEVEL_LABEL[node.level].toLowerCase()} shows red. Root cause: <span className="font-medium">{issue.title}</span> — {issue.blocked ? "a task that's blocked (someone can't move forward until it's cleared)." : "a task past its due date."}</div>
-              {issue.workId !== node.id && <button onClick={() => onOpen(issue.workId)} className="mt-2 inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100">Go to the cause <ArrowRight size={12} /></button>}
+  const childrenList = (
+    <div className="overflow-hidden rounded-lg border border-slate-200">
+      {children.map((c, i) => { const ct = LEVEL_THEME[c.level]; const cm = computeMeters(works, acts, c.id); const cst = workStats(works, acts, c.id); const crag = nodeRag(works, acts, c.id);
+        return (
+          <div key={c.id} className={`flex items-center gap-2 px-3 py-2.5 ${i ? "border-t border-slate-100" : ""} hover:bg-slate-50`}>
+            <span className={`h-6 w-1 shrink-0 rounded ${ct.bar}`} />
+            <span className="shrink-0"><LevelChip level={c.level} /></span>
+            <button onClick={() => onOpen(c.id)} className="min-w-0 flex-1 truncate text-left text-sm font-medium text-slate-800 hover:underline">{c.title}</button>
+            <span className="hidden shrink-0 items-center gap-1 text-xs text-slate-400 lg:inline-flex"><Avatar id={c.ownerId} size={14} /> {uFirst(c.ownerId)}</span>
+            {c.result && <span className={`hidden shrink-0 font-mono text-xs sm:inline ${ct.text}`}>{cm.resultPct != null ? Math.round(cm.resultPct) + "%" : "—"}</span>}
+            <span className="hidden shrink-0 text-xs text-teal-600 md:inline">Plan {cm.planning}%</span>
+            <span className="hidden shrink-0 text-xs text-amber-600 md:inline">Done {cm.execution}%</span>
+            {c.deadline && <span className="hidden shrink-0 sm:inline"><DueChip date={c.deadline} small /></span>}
+            {cst.overdue > 0 && <span className="shrink-0 rounded-full bg-rose-50 px-1.5 py-0.5 text-xs font-medium text-rose-600">{cst.overdue} od</span>}
+            <span className="shrink-0"><StatusPill rag={crag} /></span>
+            <button onClick={() => onOpen(c.id)} className="shrink-0 rounded p-1 text-slate-300 hover:text-slate-700" title="Open detail"><ArrowRight size={13} /></button>
+          </div>
+        );
+      })}
+    </div>
+  );
+  const canMoveActivity = (a) => isOrg || a.assigneeId === user.id;
+  const moveActivity = (id, patch) => { patchAct(id, patch); flash("Activity updated."); };
+  const activitiesKanban = <ActivitiesKanban acts={nodeActs} canMove={canMoveActivity} onMove={moveActivity} onOpen={onOpen} />;
+  const activitiesList = (
+    <div className="space-y-2">
+      {nodeActs.length === 0 && <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-400">No activities yet{isOrg ? " — use AI actions → Auto-assign / Fill missing, or Add task." : "."}</div>}
+      {nodeActs.map((a) => { const Icon = ACT_ICON[a.actType] || User; const over = isOverdue(a);
+        return (
+          <div key={a.id} className={`overflow-hidden rounded-lg border bg-white ${a.blocked ? "border-rose-300" : over ? "border-rose-200" : "border-slate-200"}`}>
+            <div className={`px-3 py-2 ${a.status === "executed" ? "bg-blue-50" : a.blocked ? "bg-rose-50" : over ? "bg-rose-50" : a.assigneeId && a.date ? "" : "bg-amber-50"}`}>
+              <div className="flex items-center gap-2">
+                <Icon size={14} className="shrink-0 text-slate-400" />
+                <span className={`min-w-0 flex-1 truncate text-sm ${a.status === "cancelled" ? "text-slate-400 line-through" : "text-slate-800"}`}>{a.title}{a.unplanned && <span className="ml-1 rounded bg-orange-100 px-1 text-xs text-orange-700">unplanned</span>}</span>
+                {a.blocked && <Chip tone="rose"><AlertTriangle size={10} /> blocked</Chip>}{a.status === "executed" && <Chip tone="blue"><Check size={10} /> done</Chip>}
+                {isOrg && (confirmDel === a.id
+                  ? <span className="flex shrink-0 items-center gap-1"><span className="text-xs text-rose-600">Delete?</span><button onClick={() => delAct(a.id)} className="rounded bg-rose-500 p-1 text-white hover:bg-rose-600"><Check size={12} /></button><button onClick={() => setConfirmDel(null)} className="rounded border border-slate-200 p-1 text-slate-400 hover:bg-slate-50"><X size={12} /></button></span>
+                  : <span className="flex shrink-0 items-center gap-1"><button onClick={() => setEdit(a)} className="rounded border border-slate-200 p-1 text-slate-400 hover:bg-slate-50 hover:text-slate-700"><Pencil size={12} /></button><button onClick={() => setConfirmDel(a.id)} className="rounded border border-slate-200 p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={12} /></button></span>)}
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5 pl-6 text-xs">
+                {a.assigneeId ? <span className="inline-flex items-center gap-1 text-slate-600"><Avatar id={a.assigneeId} size={16} /> {uFirst(a.assigneeId)}</span> : <span className="text-amber-700">Unassigned</span>}
+                <span className="text-slate-300">·</span>
+                <span className={over ? "text-rose-600" : "text-slate-500"}>{a.date ? fmtFull(parseISO(a.date)) : "No date"}</span>
+                <span className="text-slate-300">·</span><span className="text-slate-500">{a.actType}</span>
+                <span className="text-slate-300">·</span><span className="font-mono text-slate-400">{a.plannedHrs}h</span>
+                <button onClick={() => setDeliv(a)} className="ml-auto inline-flex items-center gap-1 rounded border border-slate-200 px-1.5 py-0.5 text-slate-500 hover:bg-slate-50">{a.deliverable ? <><Star size={10} className="text-amber-500" /> {a.deliverable.score}/100</> : <><FileText size={10} /> deliverable</>}</button>
+              </div>
+              {a.description && <div className="mt-1 pl-6 text-xs text-slate-500">{a.description}</div>}
+              {a.blocked && <div className="mt-1.5 pl-6 text-xs text-rose-600">Blocked — this task can't move forward until it's cleared. It's what's turning the levels above red.</div>}
+              {a.deliverable && <div className="mt-1 pl-6 text-xs text-slate-500"><Star size={10} className="mr-1 inline text-amber-500" />{a.deliverable.verdict} — {a.deliverable.feedback}</div>}
             </div>
           </div>
-        </div>
-      )}
-      {node.result && <ResultCard work={node} m={m} isOrg={isOrg} patchWork={patchWork} />}
-      {isOrg && myCRs.length > 0 && <button onClick={goApprovals} className="flex w-full items-center justify-between rounded-xl border border-amber-200 bg-amber-50 p-4 text-left hover:bg-amber-100"><div><div className="text-sm font-medium text-amber-800">{myCRs.length} plan change{myCRs.length > 1 ? "s" : ""} awaiting your approval</div><div className="text-xs text-amber-700">Proposed by the team</div></div><span className="inline-flex items-center gap-1 rounded-md bg-white px-3 py-1.5 text-sm font-medium text-amber-800"><ClipboardCheck size={14} /> Review <ArrowRight size={13} /></span></button>}
+        );
+      })}
     </div>
   );
 
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center gap-1.5 text-sm">
+        <button onClick={() => onOpen(node.parentId)} className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"><ChevronLeft size={14} /> Back</button>
+        <span className="mx-0.5 text-slate-300">|</span>
         <button onClick={() => onOpen(null)} className="text-slate-500 hover:text-slate-800">Portfolio</button>
         {path.map((n, i) => { const t = LEVEL_THEME[n.level]; const last = i === path.length - 1; return <span key={n.id} className="flex items-center gap-1.5"><ChevronRight size={14} className="text-slate-300" /><span className={`h-2 w-2 rounded-full ${t.bar}`} />{last ? <span className="font-medium text-slate-800">{n.title}</span> : <button onClick={() => onOpen(n.id)} className="max-w-xs truncate text-slate-500 hover:text-slate-800">{n.title}</button>}</span>; })}
       </div>
 
-      {/* one card: this node, plus (for an objective) its initiatives right inside it */}
+      {/* one card for every level: this node + its children (initiatives / works / activities) inside it */}
       <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white">
         <span className={`absolute inset-y-0 left-0 w-1 ${th.bar}`} />
         {headerBlock}
-        {isObjectiveWithChildren && <div className="border-t border-slate-100 px-5 pb-5 pt-4">{insideDivider}{childrenGrid}</div>}
+        <div className="border-t border-slate-100 px-5 pb-5 pt-4">
+          {insideDivider}
+          {leaf ? (childView === "kanban" ? activitiesKanban : activitiesList) : (childView === "list" ? childrenList : childrenGrid)}
+        </div>
       </div>
 
-      <div className="mt-4">{alertsStack}</div>
-
-      {!isObjectiveWithChildren && <div className="mt-6">{insideDivider}</div>}
-      {!isObjectiveWithChildren && !leaf && childrenGrid}
-
-      {leaf && (
-        <div className="space-y-2">
-          {nodeActs.length === 0 && <div className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-400">No activities yet{isOrg ? " — use Auto-assign, Fill missing, or Unplanned above." : "."}</div>}
-          {nodeActs.map((a) => { const Icon = ACT_ICON[a.actType] || User; const over = isOverdue(a);
-            return (
-              <div key={a.id} className={`overflow-hidden rounded-lg border bg-white ${a.blocked ? "border-rose-300" : over ? "border-rose-200" : "border-slate-200"}`}>
-                <div className={`px-3 py-2 ${a.status === "executed" ? "bg-blue-50" : a.blocked ? "bg-rose-50" : over ? "bg-rose-50" : a.assigneeId && a.date ? "" : "bg-amber-50"}`}>
-                  <div className="flex items-center gap-2">
-                    <Icon size={14} className="shrink-0 text-slate-400" />
-                    <span className={`min-w-0 flex-1 truncate text-sm ${a.status === "cancelled" ? "text-slate-400 line-through" : "text-slate-800"}`}>{a.title}{a.unplanned && <span className="ml-1 rounded bg-orange-100 px-1 text-xs text-orange-700">unplanned</span>}</span>
-                    {a.blocked && <Chip tone="rose"><AlertTriangle size={10} /> blocked</Chip>}{a.status === "executed" && <Chip tone="blue"><Check size={10} /> done</Chip>}
-                    {isOrg && (confirmDel === a.id
-                      ? <span className="flex shrink-0 items-center gap-1"><span className="text-xs text-rose-600">Delete?</span><button onClick={() => delAct(a.id)} className="rounded bg-rose-500 p-1 text-white hover:bg-rose-600"><Check size={12} /></button><button onClick={() => setConfirmDel(null)} className="rounded border border-slate-200 p-1 text-slate-400 hover:bg-slate-50"><X size={12} /></button></span>
-                      : <span className="flex shrink-0 items-center gap-1"><button onClick={() => setEdit(a)} className="rounded border border-slate-200 p-1 text-slate-400 hover:bg-slate-50 hover:text-slate-700"><Pencil size={12} /></button><button onClick={() => setConfirmDel(a.id)} className="rounded border border-slate-200 p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={12} /></button></span>)}
-                  </div>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5 pl-6 text-xs">
-                    {a.assigneeId ? <span className="inline-flex items-center gap-1 text-slate-600"><Avatar id={a.assigneeId} size={16} /> {uFirst(a.assigneeId)}</span> : <span className="text-amber-700">Unassigned</span>}
-                    <span className="text-slate-300">·</span>
-                    <span className={over ? "text-rose-600" : "text-slate-500"}>{a.date ? fmtFull(parseISO(a.date)) : "No date"}</span>
-                    <span className="text-slate-300">·</span><span className="text-slate-500">{a.actType}</span>
-                    <span className="text-slate-300">·</span><span className="font-mono text-slate-400">{a.plannedHrs}h</span>
-                    <button onClick={() => setDeliv(a)} className="ml-auto inline-flex items-center gap-1 rounded border border-slate-200 px-1.5 py-0.5 text-slate-500 hover:bg-slate-50">{a.deliverable ? <><Star size={10} className="text-amber-500" /> {a.deliverable.score}/100</> : <><FileText size={10} /> deliverable</>}</button>
-                  </div>
-                  {a.blocked && <div className="mt-1.5 pl-6 text-xs text-rose-600">Blocked — this task can't move forward until it's cleared. It's what's turning the levels above red.</div>}
-                  {a.deliverable && <div className="mt-1 pl-6 text-xs text-slate-500">{a.deliverable.verdict} — {a.deliverable.feedback}</div>}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
 
       {modify && <ModifyPlan {...{ work: node, planText: planText(), subs, acts, store, busy, setBusy, flash, onClose: () => setModify(false) }} />}
       {addUn && <AddUnplanned {...{ subs, store, flash, onClose: () => setAddUn(false) }} />}
       {deliv && <Deliverable {...{ node: deliv, parentTitle: deliv.level ? (works.find((w) => w.id === deliv.parentId)?.title || "") : node.title, store, busy, setBusy, flash, onClose: () => setDeliv(null) }} />}
       {edit && <ActivityEdit {...{ activity: edit, onSave: (p) => { patchAct(edit.id, p); setEdit(null); flash("Activity updated."); }, onClose: () => setEdit(null) }} />}
       {addChild && <QuickCreate {...{ me: user, parent: node, level: childLevel, works, store, busy, setBusy, flash, onClose: () => setAddChild(false), onCreated: (id) => { if (childLevel !== "activity") onOpen(id); } }} />}
+      {(insight || suggest) && <Modal onClose={closeResults}>
+        <div className="mb-3 flex items-center justify-between"><h3 className="flex items-center gap-2 text-sm font-medium text-slate-900"><Sparkles size={15} className="text-indigo-600" /> {suggest ? "Suggested initiatives" : `Where ${node.level === "objective" ? "this stands" : "you stand"}`}</h3><button onClick={closeResults} className="text-slate-400"><X size={18} /></button></div>
+        <div className="mb-3 rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-700">{node.title}</div>
+        {insight && <div className="space-y-2 text-sm"><p className="text-slate-700">{insight.read}</p><p className="rounded-md bg-indigo-50 px-3 py-2 text-indigo-800"><span className="font-medium">Next: </span>{insight.action}</p></div>}
+        {suggest && <div className="space-y-1.5">{suggest.length === 0 && <div className="text-sm text-slate-500">No new suggestions.</div>}{suggest.map((s, i) => <div key={i} className="flex items-center gap-2 rounded-md border border-slate-100 bg-white px-3 py-2 text-sm"><span className="min-w-0 flex-1 truncate text-slate-700">{s.title}</span><Chip tone="blue">{s.type}</Chip><button onClick={() => addSuggested(s)} className="shrink-0 rounded bg-slate-900 px-2 py-1 text-xs font-medium text-white hover:bg-slate-700">Add</button></div>)}</div>}
+      </Modal>}
+      {blockerOpen && issue && <Modal onClose={() => setBlockerOpen(false)}>
+        <div className="mb-3 flex items-center justify-between"><h3 className="flex items-center gap-2 text-sm font-medium text-rose-800"><AlertTriangle size={15} className="text-rose-500" /> Needs attention</h3><button onClick={() => setBlockerOpen(false)} className="text-slate-400"><X size={18} /></button></div>
+        <div className="text-sm text-slate-700">{att.blocked > 0 ? `${att.blocked} blocked` : ""}{att.blocked > 0 && att.overdue > 0 ? " and " : ""}{att.overdue > 0 ? `${att.overdue} overdue` : ""} deeper down — that's why this {LEVEL_LABEL[node.level].toLowerCase()} shows red.</div>
+        <div className="mt-2 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800"><span className="font-medium">Root cause:</span> {issue.title} — {issue.blocked ? "a task that's blocked (someone can't move forward until it's cleared)." : "a task past its due date."}</div>
+        {issue.workId !== node.id && <button onClick={() => { setBlockerOpen(false); onOpen(issue.workId); }} className={`${btnDark} mt-4 w-full`}>Go to the cause <ArrowRight size={14} /></button>}
+      </Modal>}
+      {approvalsOpen && <Modal onClose={() => setApprovalsOpen(false)}>
+        <div className="mb-3 flex items-center justify-between"><h3 className="flex items-center gap-2 text-sm font-medium text-slate-900"><ClipboardCheck size={15} className="text-amber-600" /> Plan changes awaiting approval</h3><button onClick={() => setApprovalsOpen(false)} className="text-slate-400"><X size={18} /></button></div>
+        <div className="space-y-1.5">{myCRs.map((c) => <div key={c.id} className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-sm"><div className="font-medium text-slate-800">{uName(c.proposerId)} — {c.kind.replace("_", " ")}</div><div className="text-xs text-slate-500">{c.desc}</div></div>)}</div>
+        <button onClick={() => { setApprovalsOpen(false); goApprovals(); }} className={`${btnDark} mt-4 w-full`}><ClipboardCheck size={14} /> Review in Approvals <ArrowRight size={14} /></button>
+      </Modal>}
     </div>
   );
 }
@@ -1098,20 +1467,21 @@ function ResultCard({ work, m, isOrg, patchWork }) {
   );
 }
 function ActivityEdit({ activity, onSave, onClose }) {
-  const [assignee, setAssignee] = useState(activity.assigneeId || ""); const [date, setDate] = useState(activity.date || ""); const [type, setType] = useState(activity.actType); const [hrs, setHrs] = useState(activity.plannedHrs);
+  const [title, setTitle] = useState(activity.title); const [desc, setDesc] = useState(activity.description || ""); const [assignee, setAssignee] = useState(activity.assigneeId || ""); const [date, setDate] = useState(activity.date || ""); const [type, setType] = useState(activity.actType); const [hrs, setHrs] = useState(activity.plannedHrs);
   return (
     <Modal onClose={onClose}>
       <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium text-slate-900">Edit activity</h3><button onClick={onClose} className="text-slate-400"><X size={18} /></button></div>
-      <div className="mb-3 rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-700">{activity.title}</div>
       <div className="space-y-3">
+        <div><label className="mb-1 block text-xs text-slate-500">Title</label><input value={title} onChange={(e) => setTitle(e.target.value)} className={inputCls} /></div>
+        <div><label className="mb-1 block text-xs text-slate-500">Description — what needs to be produced (used to score the deliverable)</label><textarea value={desc} onChange={(e) => setDesc(e.target.value)} rows={2} className={inputCls} placeholder="e.g. A one-page cost sheet with three vendor quotes compared." /></div>
         <div><label className="mb-1 block text-xs text-slate-500">Assign to</label><select value={assignee} onChange={(e) => setAssignee(e.target.value)} className={inputCls}><option value="">Unassigned</option>{USERS.map((u) => <option key={u.id} value={u.id}>{u.name} — {u.title}</option>)}</select></div>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-          <div className="sm:col-span-2"><label className="mb-1 block text-xs text-slate-500">Date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls} /></div>
+          <div className="sm:col-span-2"><label className="mb-1 block text-xs text-slate-500">Due date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls} /></div>
           <div><label className="mb-1 block text-xs text-slate-500">Hours</label><input type="number" value={hrs} onChange={(e) => setHrs(Number(e.target.value))} className={inputCls} /></div>
         </div>
         <div><label className="mb-1 block text-xs text-slate-500">Type</label><select value={type} onChange={(e) => setType(e.target.value)} className={inputCls}>{ACT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</select></div>
       </div>
-      <button onClick={() => onSave({ assigneeId: assignee || null, date: date || null, actType: type, plannedHrs: hrs })} className={`${btnDark} mt-4 w-full`}>Save changes</button>
+      <button onClick={() => onSave({ title: title.trim() || activity.title, description: desc.trim() || null, assigneeId: assignee || null, date: date || null, actType: type, plannedHrs: hrs })} className={`${btnDark} mt-4 w-full`}>Save changes</button>
     </Modal>
   );
 }
@@ -1211,16 +1581,18 @@ function MyDay({ me, works, acts, busy, setBusy, flash, patchAct, store }) {
   );
 }
 function QuickAdd({ me, works, date, store, flash, onClose }) {
-  const leaves = works.filter((w) => !works.some((x) => x.parentId === w.id));
-  const [wid, setWid] = useState(leaves[0] ? leaves[0].id : ""); const [title, setTitle] = useState(""); const [hrs, setHrs] = useState(1); const [type, setType] = useState("self");
+  const leaves = works.filter((w) => w.level === "work");
+  const [wid, setWid] = useState(leaves[0] ? leaves[0].id : ""); const [title, setTitle] = useState(""); const [desc, setDesc] = useState(""); const [hrs, setHrs] = useState(1); const [type, setType] = useState("self"); const [due, setDue] = useState(date);
   return (
     <Modal onClose={onClose}>
       <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium text-slate-900">Add an activity</h3><button onClick={onClose} className="text-slate-400"><X size={18} /></button></div>
-      <p className="mb-3 text-xs text-slate-400">Adds to your day on {fmtFull(parseISO(date))}, assigned to you.</p>
+      <p className="mb-3 text-xs text-slate-400">Assigned to you. Add a description so the deliverable can be scored against it later.</p>
       <label className="mb-1 block text-xs text-slate-500">Under work</label><select value={wid} onChange={(e) => setWid(e.target.value)} className={`${inputCls} mb-3`}>{leaves.map((w) => <option key={w.id} value={w.id}>{w.title}</option>)}</select>
-      <label className="mb-1 block text-xs text-slate-500">Activity</label><input value={title} onChange={(e) => setTitle(e.target.value)} className={`${inputCls} mb-3`} placeholder="What are you doing?" />
-      <div className="mb-4 grid grid-cols-2 gap-2"><div><label className="mb-1 block text-xs text-slate-500">Hours</label><input type="number" value={hrs} onChange={(e) => setHrs(Number(e.target.value))} className={inputCls} /></div><div><label className="mb-1 block text-xs text-slate-500">Type</label><select value={type} onChange={(e) => setType(e.target.value)} className={inputCls}>{ACT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</select></div></div>
-      <button onClick={() => { if (!title.trim() || !wid) return; store.addActs([{ id: nid("a"), workId: wid, title: title.trim(), assigneeId: me.id, date, status: "planned", plannedHrs: hrs, actualHrs: null, actType: type }]); flash("Added to your day."); onClose(); }} disabled={!title.trim()} className={`${btnDark} w-full`}>Add</button>
+      <label className="mb-1 block text-xs text-slate-500">Activity title</label><input value={title} onChange={(e) => setTitle(e.target.value)} className={`${inputCls} mb-3`} placeholder="What are you doing?" />
+      <label className="mb-1 block text-xs text-slate-500">Description — type, speak, or attach (what needs to be produced)</label>
+      <div className="mb-3"><MultiModalInput value={desc} onChange={setDesc} placeholder="Describe the task or the deliverable — you can dictate it…" /></div>
+      <div className="mb-4 grid grid-cols-3 gap-2"><div><label className="mb-1 block text-xs text-slate-500">Due date</label><input type="date" value={due} onChange={(e) => setDue(e.target.value)} className={inputCls} /></div><div><label className="mb-1 block text-xs text-slate-500">Hours</label><input type="number" value={hrs} onChange={(e) => setHrs(Number(e.target.value))} className={inputCls} /></div><div><label className="mb-1 block text-xs text-slate-500">Type</label><select value={type} onChange={(e) => setType(e.target.value)} className={inputCls}>{ACT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</select></div></div>
+      <button onClick={() => { if (!title.trim() || !wid) return; store.addActs([{ id: nid("a"), workId: wid, title: title.trim(), description: desc.trim() || null, assigneeId: me.id, date: due || date, status: "planned", plannedHrs: hrs, actualHrs: null, actType: type }]); flash("Added to your day."); onClose(); }} disabled={!title.trim()} className={`${btnDark} w-full`}>Add</button>
     </Modal>
   );
 }
@@ -1323,14 +1695,14 @@ function Capture({ me, teams, store, works, busy, setBusy, flash, onClose, onOpe
     const dl = deadline ? parseISO(deadline) : null; const span = dl ? Math.max(1, Math.round((dl - TODAY) / MSD)) : 5;
     (worksList || []).forEach((wk) => {
       const wid = nid("w"); nw.push({ id: wid, parentId: topId, level: "work", title: wk.title, type: ty, ownerId: me.id });
-      (wk.subworks || []).forEach((sw) => { const sid = nid("w"); nw.push({ id: sid, parentId: wid, level: "subwork", title: sw.title, type: ty, ownerId: me.id }); (sw.activities || []).forEach((ac) => { let assignee = null, date = null; if (memberIds.length) { assignee = memberIds.reduce((a, b) => (load[a] <= load[b] ? a : b)); load[assignee] += Number(ac.estimateHrs) || 2; date = iso(addDays(TODAY, ai % span)); ai++; } na.push({ id: nid("a"), workId: sid, title: ac.title, assigneeId: assignee, date, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" }); }); });
+      (wk.activities || []).forEach((ac) => { let assignee = null, date = null; if (memberIds.length) { assignee = memberIds.reduce((a, b) => (load[a] <= load[b] ? a : b)); load[assignee] += Number(ac.estimateHrs) || 2; date = iso(addDays(TODAY, ai % span)); ai++; } na.push({ id: nid("a"), workId: wid, title: ac.title, assigneeId: assignee, date, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" }); });
     });
     store.addWorks(nw); if (na.length) store.addActs(na); return topId;
   };
   const run = async () => {
     if (!title.trim() && !text.trim()) return; setBusy("cap");
     try { const ctx = `${title.trim()}${objective ? ". Objective: " + objective : ""}${text ? ". Plan shared by the lead: " + text : ""}`.slice(0, 1500); const out = await AI.decompose(ctx, type); const id = build(title.trim() || text.slice(0, 50), type, out.works); flash(team ? `AI drafted the plan and assigned it to ${team.name}.` : "AI drafted the plan."); onOpen(id); }
-    catch { const id = build(title.trim() || "New work", type, [{ title: "Plan", subworks: [{ title: "Get started", activities: [{ title: "Define scope & owners", estimateHrs: 2, type: "self" }] }] }]); flash("AI unavailable — created a starter you can edit."); onOpen(id); }
+    catch { const id = build(title.trim() || "New work", type, [{ title: "Plan", activities: [{ title: "Define scope & owners", estimateHrs: 2, type: "self" }] }]); flash("AI unavailable — created a starter you can edit."); onOpen(id); }
     setBusy(null);
   };
   return (
@@ -1344,10 +1716,10 @@ function Capture({ me, teams, store, works, busy, setBusy, flash, onClose, onOpe
       </div>
       {team && <div className="mb-3 flex flex-wrap items-center gap-1.5">{team.memberIds.map((id) => <span key={id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600"><Avatar id={id} size={16} /> {uFirst(id)} <span className="text-slate-400">{fnOf(id)}</span></span>)}</div>}
       <label className="mb-1 block text-xs text-slate-500">Objective (optional)</label><input value={objective} onChange={(e) => setObjective(e.target.value)} className={`${inputCls} mb-3`} placeholder="The result this should move" />
-      <label className="mb-1 block text-xs text-slate-500">Plan from the head — type, speak, or attach (the AI uses this to build the sub-works)</label>
+      <label className="mb-1 block text-xs text-slate-500">Plan from the head — type, speak, or attach (the AI uses this to build the works)</label>
       <MultiModalInput value={text} onChange={setText} placeholder="Paste or speak the plan the lead shared, or attach the note…" />
       <button onClick={run} disabled={busy || (!title.trim() && !text.trim())} className={`${btnViolet} mt-3 w-full`}>{busy ? <><Loader2 size={15} className="animate-spin" /> Drafting &amp; assigning…</> : <><Sparkles size={15} /> Draft plan &amp; assign to team</>}</button>
-      <p className="mt-2 text-center text-xs text-slate-400">AI builds objective → work → sub-works → activities, and distributes them across the team by load.</p>
+      <p className="mt-2 text-center text-xs text-slate-400">AI builds initiative → works → activities, and distributes them across the team by load.</p>
       {teamModal && <TeamModal {...{ teams, store, onSelect: setTeamId, onClose: () => setTeamModal(false) }} />}
     </Modal>
   );
@@ -1379,7 +1751,7 @@ function RemarkModal({ node, works, acts, busy, setBusy, flash, onSubmit, onClos
   const subs = works.filter((w) => w.parentId === node.id); const container = subs.length ? subs : [node];
   const planText = container.map((s) => `- ${s.title}: ${acts.filter((a) => a.workId === s.id).map((a) => a.title + " (" + a.actType + ")").join(", ") || "none"}`).join("\n");
   const draftOps = async () => { if (!text.trim()) return; setBusy("remarkops"); try { setOps((await AI.modifyPlan(planText, text)).ops || []); } catch { flash("AI unavailable — you can still send the remark."); } setBusy(null); };
-  const opLabel = (op) => op.op === "add_activity" ? `Add task “${op.title}” to ${op.subwork || container[0].title}` : op.op === "add_subwork" ? `Add sub-work “${op.title}”` : `Retype “${op.match}” → ${op.type}`;
+  const opLabel = (op) => op.op === "add_activity" ? `Add task “${op.title}” to ${op.work || op.subwork || container[0].title}` : (op.op === "add_work" || op.op === "add_subwork") ? `Add work “${op.title}”` : `Retype “${op.match}” → ${op.type}`;
   return (
     <Modal onClose={onClose} wide>
       <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium text-slate-900">Remark &amp; update plan</h3><button onClick={onClose} className="text-slate-400"><X size={18} /></button></div>
@@ -1409,7 +1781,7 @@ function NudgeInbox({ remarks, me, onOpen, onClose }) {
   return (
     <Modal onClose={onClose} wide>
       <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium text-slate-900">Your nudges</h3><button onClick={onClose} className="text-slate-400"><X size={18} /></button></div>
-      {mine.length === 0 && <div className="rounded-md border border-dashed border-slate-200 px-3 py-8 text-center text-sm text-slate-400">No nudges yet. When a leader remarks on your initiative, work, or sub-work, it lands here.</div>}
+      {mine.length === 0 && <div className="rounded-md border border-dashed border-slate-200 px-3 py-8 text-center text-sm text-slate-400">No nudges yet. When a leader remarks on your initiative or work, it lands here.</div>}
       <div className="space-y-2">{mine.map((r) => { const th = LEVEL_THEME[r.level] || LEVEL_THEME.activity; return (
         <div key={r.id} className="rounded-lg border border-slate-200 p-3">
           <div className="flex items-center gap-2"><Avatar id={r.fromId} size={20} /><span className="text-sm font-medium text-slate-800">{uName(r.fromId)}</span><span className="text-xs text-slate-400">on</span><span className={`rounded px-1.5 py-0.5 text-xs font-medium ${th.chip}`}>{LEVEL_LABEL[r.level]}</span><span className="min-w-0 flex-1 truncate text-xs text-slate-500">{r.title}</span><span className="shrink-0 text-xs text-slate-300">{ago(r.ts)}</span></div>
@@ -1437,18 +1809,16 @@ function QuickCreate({ me, parent, level, works, store, busy, setBusy, flash, on
     try {
       let sys, usr;
       if (isObj) { sys = 'Turn the note into ONE crisp enterprise objective (an outcome, not a task). Return ONLY JSON: {"title":string,"type":"procurement"|"cost"|"onboarding"|"compliance"|"general","metric":string,"unit":string,"target":number}'; usr = `Note:\n"""${text}"""`; }
-      else if (level === "initiative") { sys = 'Draft an initiative that fulfils the objective, broken into 2-4 works (phases of execution), each with 2-4 sub-works, each with 1-3 activities. Return ONLY JSON: {"title":string,"type":"procurement"|"cost"|"onboarding"|"compliance"|"general","works":[{"title":string,"subworks":[{"title":string,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}]}'; usr = `Objective: "${parent.title}". Note:\n"""${text}"""`; }
-      else if (level === "work") { sys = 'Draft a work (a phase of execution). Return ONLY JSON: {"title":string,"type":"procurement"|"cost"|"onboarding"|"compliance"|"general","subworks":[{"title":string,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}'; usr = `Initiative: "${parent.title}". Note:\n"""${text}"""`; }
-      else if (level === "subwork") { sys = 'Draft a sub-work with 1-4 concrete activities. Return ONLY JSON: {"title":string,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}'; usr = `Parent: "${parent.title}". Note:\n"""${text}"""`; }
-      else { sys = 'Turn the note into ONE task. Return ONLY JSON: {"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}'; usr = `Sub-work: "${parent.title}". Note:\n"""${text}"""`; }
+      else if (level === "initiative") { sys = 'Draft an initiative that fulfils the objective, broken into 3-6 works (phases of execution), each with 1-4 concrete activities. Return ONLY JSON: {"title":string,"type":"procurement"|"cost"|"onboarding"|"compliance"|"general","works":[{"title":string,"activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}]}'; usr = `Objective: "${parent.title}". Note:\n"""${text}"""`; }
+      else if (level === "work") { sys = 'Draft a work (a phase of execution) with 1-5 concrete activities. Return ONLY JSON: {"title":string,"type":"procurement"|"cost"|"onboarding"|"compliance"|"general","activities":[{"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}]}'; usr = `Initiative: "${parent.title}". Note:\n"""${text}"""`; }
+      else { sys = 'Turn the note into ONE task. Return ONLY JSON: {"title":string,"estimateHrs":number,"type":"self"|"meeting"|"call"|"site"}'; usr = `Work: "${parent.title}". Note:\n"""${text}"""`; }
       const d = parseJSON(await aiComplete(sys, usr, pdf ? pdf.data : undefined));
       if (d.title) setTitle(d.title);
       if (d.type && (isObj || isContainer)) setType(d.type);
       if (isObj && d.metric) { setHasMetric(true); setMetric(d.metric); setUnit(d.unit || "%"); setTarget(d.target || 100); }
       if (isAct) { if (d.estimateHrs) setHrs(Number(d.estimateHrs) || 2); if (d.type) setActType(d.type); }
-      if (level === "subwork") setSubs(d.activities || []);
       if (level === "initiative") setSubs(d.works || []);
-      if (level === "work") setSubs(d.subworks || []);
+      if (level === "work") setSubs(d.activities || []);
       flash("AI drafted it — review the fields, then create.");
     } catch { const t = (text.split("\n").find((l) => l.trim()) || "").slice(0, 90).trim(); if (t) setTitle(t); flash("AI unavailable — fill the fields in and create."); }
     setBusy(null);
@@ -1462,9 +1832,8 @@ function QuickCreate({ me, parent, level, works, store, busy, setBusy, flash, on
     if (isObj && hasMetric && metric.trim()) node.result = { metric: metric.trim(), unit, baseline: 0, target: Number(target) || 100, current: 0 };
     if (level === "initiative") node.result = { metric: tpl.metric, unit: tpl.unit, baseline: 0, target: 100, current: 0 };
     nw.push(node);
-    if (level === "subwork") { subs.forEach((ac) => na.push({ id: nid("a"), workId: topId, title: ac.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" })); }
-    else if (level === "initiative") { subs.forEach((wk) => { const wid = nid("w"); nw.push({ id: wid, parentId: topId, level: "work", title: wk.title, ownerId: me.id, type }); (wk.subworks || []).forEach((sw) => { const sid = nid("w"); nw.push({ id: sid, parentId: wid, level: "subwork", title: sw.title, ownerId: me.id, type }); (sw.activities || []).forEach((ac) => na.push({ id: nid("a"), workId: sid, title: ac.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" })); }); }); }
-    else if (isContainer) { subs.forEach((sw) => { const sid = nid("w"); nw.push({ id: sid, parentId: topId, level: "subwork", title: sw.title, ownerId: me.id, type }); (sw.activities || []).forEach((ac) => na.push({ id: nid("a"), workId: sid, title: ac.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" })); }); }
+    if (level === "work") { subs.forEach((ac) => na.push({ id: nid("a"), workId: topId, title: ac.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" })); }
+    else if (level === "initiative") { subs.forEach((wk) => { const wid = nid("w"); nw.push({ id: wid, parentId: topId, level: "work", title: wk.title, ownerId: me.id, type }); (wk.activities || []).forEach((ac) => na.push({ id: nid("a"), workId: wid, title: ac.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || "self" })); }); }
     store.addWorks(nw); if (na.length) store.addActs(na);
     flash(`${label} created.`); onCreated && onCreated(topId); onClose();
   };
@@ -1494,7 +1863,7 @@ function QuickCreate({ me, parent, level, works, store, busy, setBusy, flash, on
         <button onClick={draftIt} disabled={busy || (!text.trim() && !pdf)} className={`${btnViolet} mt-2 w-full`}>{busy === "draft" ? <><Loader2 size={15} className="animate-spin" /> Reading…</> : <><Sparkles size={15} /> Draft with AI</>}</button>
       </div>
 
-      {subs.length > 0 && <div className="mb-3"><div className="mb-1 text-xs font-medium text-slate-500">{level === "subwork" ? "Activities" : level === "initiative" ? "Works" : "Sub-works"} AI drafted ({subs.length})</div><div className="max-h-40 space-y-1 overflow-y-auto">{subs.map((c, i) => <div key={i} className="flex items-center gap-2 rounded-md bg-slate-50 px-3 py-1.5 text-sm text-slate-700"><span className="min-w-0 flex-1 truncate">{c.title}</span>{c.subworks ? <span className="shrink-0 text-xs text-slate-400">{c.subworks.length} sub-works</span> : c.activities ? <span className="shrink-0 text-xs text-slate-400">{c.activities.length} activities</span> : null}<button onClick={() => setSubs(subs.filter((_, j) => j !== i))} className="shrink-0 text-slate-300 hover:text-rose-500"><X size={13} /></button></div>)}</div></div>}
+      {subs.length > 0 && <div className="mb-3"><div className="mb-1 text-xs font-medium text-slate-500">{level === "initiative" ? "Works" : "Activities"} AI drafted ({subs.length})</div><div className="max-h-40 space-y-1 overflow-y-auto">{subs.map((c, i) => <div key={i} className="flex items-center gap-2 rounded-md bg-slate-50 px-3 py-1.5 text-sm text-slate-700"><span className="min-w-0 flex-1 truncate">{c.title}</span>{c.activities ? <span className="shrink-0 text-xs text-slate-400">{c.activities.length} activities</span> : null}<button onClick={() => setSubs(subs.filter((_, j) => j !== i))} className="shrink-0 text-slate-300 hover:text-rose-500"><X size={13} /></button></div>)}</div></div>}
 
       <button onClick={create} disabled={!title.trim()} className={`${btnDark} w-full`}><Check size={14} /> Create {label.toLowerCase()}</button>
     </Modal>
@@ -1521,9 +1890,9 @@ function ModifyPlan({ work, planText, subs, acts, store, busy, setBusy, flash, o
   const [text, setText] = useState(""); const [ops, setOps] = useState(null);
   const run = async () => { setBusy("mod"); try { setOps((await AI.modifyPlan(planText, text)).ops || []); } catch { flash("AI unavailable."); } setBusy(null); };
   const apply = () => {
-    const nw = []; (ops || []).forEach((op) => { if (op.op === "add_subwork") nw.push({ id: nid("w"), parentId: work.id, level: "subwork", title: op.title, type: work.type, ownerId: work.ownerId }); });
+    const nw = []; (ops || []).forEach((op) => { if (op.op === "add_work" || op.op === "add_subwork") nw.push({ id: nid("w"), parentId: work.id, level: "work", title: op.title, type: work.type, ownerId: work.ownerId }); });
     const liveSubs = subs.concat(nw); const na = [];
-    (ops || []).forEach((op) => { if (op.op === "add_activity") { const sw = liveSubs.find((s) => s.title.toLowerCase().includes((op.subwork || "").toLowerCase())) || liveSubs[0]; if (sw) na.push({ id: nid("a"), workId: sw.id, title: op.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(op.estimateHrs) || 2, actualHrs: null, actType: op.type || "self", unplanned: true }); } });
+    (ops || []).forEach((op) => { if (op.op === "add_activity") { const key = (op.work || op.subwork || "").toLowerCase(); const sw = liveSubs.find((s) => s.title.toLowerCase().includes(key)) || liveSubs[0]; if (sw) na.push({ id: nid("a"), workId: sw.id, title: op.title, assigneeId: null, date: null, status: "planned", plannedHrs: Number(op.estimateHrs) || 2, actualHrs: null, actType: op.type || "self", unplanned: true }); } });
     // retype: match by activity title within the current sub-works
     const subIds = new Set(subs.map((s) => s.id));
     const actPatches = {};
@@ -1539,7 +1908,7 @@ function ModifyPlan({ work, planText, subs, acts, store, busy, setBusy, flash, o
       <p className="mb-3 text-xs text-slate-400">Tell AI what changed — type, speak, or paste a note.</p>
       <MultiModalInput value={text} onChange={setText} placeholder="e.g. Legal wants a data-privacy review before PO; HOD sign-off is a meeting not a self task." />
       {!ops && <button onClick={run} disabled={busy || !text.trim()} className={`${btnViolet} mt-3 w-full`}>{busy ? <><Loader2 size={15} className="animate-spin" /> Reading…</> : <><Sparkles size={15} /> Propose changes</>}</button>}
-      {ops && <div className="mt-3"><div className="mb-2 text-xs font-medium text-slate-500">Proposed changes</div><div className="space-y-1">{ops.length === 0 && <div className="text-sm text-slate-400">No changes proposed.</div>}{ops.map((op, i) => <div key={i} className="rounded-md bg-slate-50 px-3 py-1.5 text-sm text-slate-700">{op.op === "add_activity" ? `Add “${op.title}” to ${op.subwork}` : op.op === "add_subwork" ? `Add sub-work “${op.title}”` : `Retype “${op.match}” → ${op.type}`}</div>)}</div><div className="mt-3 flex gap-2"><button onClick={apply} className={`${btnDark} flex-1`}><Check size={14} /> Apply</button><button onClick={() => setOps(null)} className={btnLight}>Redo</button></div></div>}
+      {ops && <div className="mt-3"><div className="mb-2 text-xs font-medium text-slate-500">Proposed changes</div><div className="space-y-1">{ops.length === 0 && <div className="text-sm text-slate-400">No changes proposed.</div>}{ops.map((op, i) => <div key={i} className="rounded-md bg-slate-50 px-3 py-1.5 text-sm text-slate-700">{op.op === "add_activity" ? `Add “${op.title}” to ${op.work || op.subwork || "a work"}` : (op.op === "add_work" || op.op === "add_subwork") ? `Add work “${op.title}”` : `Retype “${op.match}” → ${op.type}`}</div>)}</div><div className="mt-3 flex gap-2"><button onClick={apply} className={`${btnDark} flex-1`}><Check size={14} /> Apply</button><button onClick={() => setOps(null)} className={btnLight}>Redo</button></div></div>}
     </Modal>
   );
 }
@@ -1562,7 +1931,7 @@ function ProposeChange({ activity, me, store, flash, onClose }) {
   const pick = (k) => { setKind(k); setDesc(TPL[k]); };
   const submit = () => {
     const payload = kind === "add_activity" ? { title: title || "Follow-up task", hrs, type: "self" } : kind === "extend" ? { activityId: activity.id, hrs } : kind === "reassign" ? { activityId: activity.id, to } : { activityId: activity.id };
-    store.addCr({ id: nid("cr"), workId: activity.workId, subworkId: activity.workId, proposerId: me.id, kind, desc: desc || "(no note)", status: "pending", payload });
+    store.addCr({ id: nid("cr"), workId: activity.workId, targetWorkId: activity.workId, proposerId: me.id, kind, desc: desc || "(no note)", status: "pending", payload });
     flash("Proposed. It now needs organizer approval."); onClose();
   };
   const kinds = [["add_activity", "Add follow-up"], ["extend", "Needs more time"], ["blocked", "Blocked / help"], ["reassign", "Change owner"]];
@@ -1598,11 +1967,12 @@ function Deliverable({ node, parentTitle, store, busy, setBusy, flash, onClose }
     } catch (e) { flash(e.message || "Couldn't read that file from OneDrive."); }
     setReading(false);
   };
-  const score = async () => { setBusy("score"); let out; try { out = await AI.score(parentTitle || "", node.title, content || name); } catch { out = { score: content.length > 200 ? 72 : 55, verdict: "Reasonable draft", feedback: "AI scoring unavailable; provisional score." }; } const d = { name: name || "deliverable", content, ...out }; setResult(d); if (isWorkNode) store.patchWork(node.id, { deliverable: d }); else store.patchAct(node.id, { deliverable: d }); setBusy(null); flash(`Deliverable scored ${out.score}/100.`); };
+  const score = async () => { setBusy("score"); let out; const material = content.trim() || `Submitted file: ${name}`; try { out = await AI.score(parentTitle || "", node.title, node.description || "", material); } catch { out = { score: content.length > 200 ? 72 : 55, verdict: "Reasonable draft", feedback: "AI scoring unavailable; provisional score." }; } const d = { name: name || "deliverable", content, ...out }; setResult(d); if (isWorkNode) store.patchWork(node.id, { deliverable: d }); else store.patchAct(node.id, { deliverable: d }); setBusy(null); flash(`Deliverable scored ${out.score}/100.`); };
   return (
     <Modal onClose={onClose}>
       <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium text-slate-900">Deliverable — “{node.title}”</h3><button onClick={onClose} className="text-slate-400"><X size={18} /></button></div>
-      <p className="mb-3 text-xs text-slate-400">Attach the output (PO, email, PPT, doc). AI checks fit to the work. PDF / Word / .md / .txt are read automatically; for other files paste the content or a summary.</p>
+      {node.description && <div className="mb-3 rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600"><span className="font-medium text-slate-500">What was asked:</span> {node.description}</div>}
+      <p className="mb-3 text-xs text-slate-400">Attach the output (PO, email, PPT, doc). The AI scores it against what was asked above. PDF / Word / .md / .txt are read automatically; for other files paste the content or a summary.</p>
       <div className="mb-2 flex flex-col gap-1.5 sm:flex-row">
         <label className="flex flex-1 cursor-pointer items-center gap-2 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50"><Upload size={14} /> {reading ? <span className="inline-flex items-center gap-1"><Loader2 size={13} className="animate-spin" /> Reading {name}…</span> : (name || "Choose a file — PDF, Word, .md, .txt")}<input type="file" accept=".pdf,.docx,.doc,.txt,.md,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="hidden" onChange={(e) => readF(e.target.files && e.target.files[0])} /></label>
         {MSAL_CONFIGURED && <button onClick={pickOD} disabled={reading} className="flex flex-1 items-center justify-center gap-2 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50 disabled:opacity-50"><Cloud size={14} /> From OneDrive</button>}

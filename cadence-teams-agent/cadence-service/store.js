@@ -74,7 +74,7 @@ function summarizeInitiative(top) {
 function detailInitiative(top) {
   const base = summarizeInitiative(top);
   const ids = M.subtreeIds(db.works, top.id);
-  const subs = db.works.filter((w) => ids.includes(w.id) && w.level === 'subwork').map((s) => {
+  const subs = db.works.filter((w) => ids.includes(w.id) && w.level === 'work').map((s) => {
     const m = M.computeMeters(db.works, db.acts, s.id);
     const activities = db.acts.filter((a) => a.workId === s.id).map((a) => ({
       id: a.id, title: a.title, assigneeId: a.assigneeId, assigneeName: a.assigneeId ? uName(a.assigneeId) : null,
@@ -84,7 +84,8 @@ function detailInitiative(top) {
     }));
     return { id: s.id, title: s.title, ownerId: s.ownerId, ownerName: uName(s.ownerId), planning: m.planning, execution: m.execution, activities };
   });
-  return { ...base, subworks: subs };
+  // `works` is the current breakdown; `subworks` kept as an alias for the bot card.
+  return { ...base, works: subs, subworks: subs };
 }
 
 /* ---------- reads (scoped, for the bot) ---------- */
@@ -183,7 +184,7 @@ function ensureHomeObjective() {
   if (!obj) { obj = { id: nid('w'), parentId: null, level: 'objective', title: 'New initiatives', type: 'general', ownerId: 'u_vik' }; db.works.push(obj); }
   return obj.id;
 }
-function createInitiative({ ownerId, title, type = 'general', objective, deadline, teamId, parentId, subworks = [] }) {
+function createInitiative({ ownerId, title, type = 'general', objective, deadline, teamId, parentId, works, subworks = [] }) {
   const topId = nid('w');
   const tpl = METRIC_BY_TYPE[type] || METRIC_BY_TYPE.general;
   const t = teamId ? team(teamId) : null;
@@ -192,11 +193,13 @@ function createInitiative({ ownerId, title, type = 'general', objective, deadlin
   const top = { id: topId, parentId: parentObj, level: 'initiative', title, type, ownerId: ownerId || 'u_vik', teamId: teamId || null, scope: memberIds.length > 1 ? 'group' : 'individual', objective: objective || null, deadline: deadline || null, result: { metric: tpl.metric, unit: tpl.unit, baseline: 0, target: 100, current: 0 } };
   db.works.push(top);
   const newActs = [];
-  subworks.forEach((sw) => {
-    const sid = nid('w');
-    db.works.push({ id: sid, parentId: topId, level: 'subwork', title: sw.title, type, ownerId: ownerId || 'u_vik' });
-    (sw.activities || []).forEach((ac) => {
-      newActs.push({ id: nid('a'), workId: sid, title: ac.title, assigneeId: null, date: null, status: 'planned', plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || 'self' });
+  // A plan is a list of works, each with activities. `subworks` is a legacy alias.
+  const workList = works || subworks || [];
+  workList.forEach((wk) => {
+    const wid = nid('w');
+    db.works.push({ id: wid, parentId: topId, level: 'work', title: wk.title, type, ownerId: ownerId || 'u_vik' });
+    (wk.activities || []).forEach((ac) => {
+      newActs.push({ id: nid('a'), workId: wid, title: ac.title, assigneeId: null, date: null, status: 'planned', plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || 'self' });
     });
   });
   M.assignToTeam(db.acts, newActs, memberIds, deadline);
@@ -223,7 +226,7 @@ function decideApproval(crId, { approve, remark, spinoff, approverId }) {
   const cr = db.crs.find((c) => c.id === crId);
   if (!cr) return null;
   if (approve) {
-    if (cr.kind === 'add_activity') db.acts.push({ id: nid('a'), workId: cr.subworkId, title: cr.payload.title, assigneeId: null, date: null, status: 'planned', plannedHrs: cr.payload.hrs, actualHrs: null, actType: cr.payload.type || 'self', unplanned: true });
+    if (cr.kind === 'add_activity') db.acts.push({ id: nid('a'), workId: cr.targetWorkId || cr.subworkId, title: cr.payload.title, assigneeId: null, date: null, status: 'planned', plannedHrs: cr.payload.hrs, actualHrs: null, actType: cr.payload.type || 'self', unplanned: true });
     if (cr.kind === 'extend') { const a = db.acts.find((x) => x.id === cr.payload.activityId); if (a) a.plannedHrs += cr.payload.hrs || 1; }
     if (cr.kind === 'blocked') { const a = db.acts.find((x) => x.id === cr.payload.activityId); if (a) a.blocked = true; }
     if (cr.kind === 'reassign') { const a = db.acts.find((x) => x.id === cr.payload.activityId); if (a) a.assigneeId = cr.payload.to; }

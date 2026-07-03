@@ -72,7 +72,7 @@ function sufficiency(m, st) {
 const loadOf = (acts, uid) => acts.filter((a) => a.assigneeId === uid && a.status !== 'executed' && a.status !== 'cancelled').reduce((s, a) => s + a.plannedHrs, 0);
 
 /* ---------- tree / roll-up helpers ---------- */
-const HOME_LEVEL = { md: 'objective', vp: 'initiative', member: 'subwork' };
+const HOME_LEVEL = { md: 'objective', vp: 'initiative', member: 'work' };
 function subtreeActs(works, acts, id) { const ids = subtreeIds(works, id); return acts.filter((a) => ids.includes(a.workId) && a.status !== 'cancelled'); }
 function nodeRag(works, acts, id) { const sa = subtreeActs(works, acts, id); if (sa.some((a) => isOverdue(a) || a.blocked)) return 'red'; const m = computeMeters(works, acts, id); if (m.stuck || m.planning - m.execution > 40) return 'amber'; return 'green'; }
 function deepestIssue(works, acts, id) { const sa = subtreeActs(works, acts, id); return sa.find((a) => a.blocked) || sa.find((a) => isOverdue(a)) || null; }
