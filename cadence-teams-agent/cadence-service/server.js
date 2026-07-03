@@ -76,9 +76,9 @@ app.get('/api/initiatives/:id', (req, res) => {
   ok(res, store.detailInitiative(top));
 });
 app.post('/api/initiatives', (req, res) => {
-  const { ownerId, title, type, objective, deadline, teamId, parentId, subworks } = req.body || {};
+  const { ownerId, title, type, objective, deadline, teamId, parentId, works, subworks } = req.body || {};
   if (!title) return bad(res, 'title required');
-  const initiative = store.createInitiative({ ownerId, title, type, objective, deadline, teamId, parentId, subworks: subworks || [] });
+  const initiative = store.createInitiative({ ownerId, title, type, objective, deadline, teamId, parentId, works: works || [], subworks: subworks || [] });
   withSnap(res, { initiative });
 });
 
@@ -113,6 +113,17 @@ app.post('/api/ai/complete', async (req, res) => {
 });
 app.post('/api/ai/extract', async (req, res) => {
   try { const text = await ai.extract(req.body?.data, req.body?.name); ok(res, { text, name: req.body?.name || 'document' }); }
+  catch (e) { aiErr(res, e); }
+});
+// Fetch a shared OneDrive/SharePoint link server-side (no OAuth) and extract text.
+app.post('/api/ai/fetch-url', async (req, res) => {
+  try { const out = await ai.fetchShared(req.body?.url); ok(res, out); }
+  catch (e) { aiErr(res, e); }
+});
+// Proxy a pre-authenticated download URL (Graph downloadUrl) → base64, so the
+// browser can sidestep a CORS-blocked work/school download.
+app.post('/api/ai/fetch-download', async (req, res) => {
+  try { const out = await ai.fetchDirectB64(req.body?.url, req.body?.name); ok(res, out); }
   catch (e) { aiErr(res, e); }
 });
 app.post('/api/ai/transcribe', async (req, res) => {

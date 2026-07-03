@@ -30,7 +30,7 @@ export function portfolioCard(p: any) {
 
 export function initiativeCard(i: any) {
   const gapTxt = i.result ? `${i.result.metric}: ${i.result.current} of ${i.result.target} ${i.result.unit} · gap ${i.gap} ${i.result.unit}` : 'No result metric';
-  const subs = (i.subworks || []).map((s: any) => ({
+  const subs = (i.works || []).map((s: any) => ({
     type: 'Container', spacing: 'Small', separator: true, items: [
       { type: 'TextBlock', text: `${s.title}  —  P ${s.planning}% · E ${s.execution}%`, weight: 'Bolder', wrap: true },
       ...s.activities.map((a: any) => ({ type: 'TextBlock', size: 'Small', wrap: true, color: a.overdue ? 'Attention' : a.blocked ? 'Warning' : 'Default', text: `• ${a.title} — ${a.assigneeName || 'Unassigned'} · ${a.date || 'no date'} · ${a.status}${a.blocked ? ' · blocked' : ''}` })),
@@ -48,14 +48,14 @@ export function initiativeCard(i: any) {
 }
 
 export function createdCard(i: any) {
-  const nAct = (i.subworks || []).reduce((s: number, sw: any) => s + sw.activities.length, 0);
+  const nAct = (i.works || []).reduce((s: number, wk: any) => s + wk.activities.length, 0);
   return card([
     title('Initiative created & assigned', i.title),
     { type: 'FactSet', facts: [
       { title: 'Type', value: i.type }, { title: 'Team', value: i.teamName || '—' }, { title: 'Scope', value: i.scope || '—' },
-      { title: 'Deadline', value: i.deadline || '—' }, { title: 'Sub-works', value: `${(i.subworks || []).length}` }, { title: 'Activities assigned', value: `${nAct}` },
+      { title: 'Deadline', value: i.deadline || '—' }, { title: 'Works', value: `${(i.works || []).length}` }, { title: 'Activities assigned', value: `${nAct}` },
     ] },
-    ...(i.subworks || []).map((s: any) => ({ type: 'TextBlock', size: 'Small', wrap: true, text: `**${s.title}** — ${s.activities.map((a: any) => `${a.title} (${a.assigneeName || 'unassigned'}, ${a.date || 'tbd'})`).join('; ')}` })),
+    ...(i.works || []).map((s: any) => ({ type: 'TextBlock', size: 'Small', wrap: true, text: `**${s.title}** — ${s.activities.map((a: any) => `${a.title} (${a.assigneeName || 'unassigned'}, ${a.date || 'tbd'})`).join('; ')}` })),
   ], [{ type: 'Action.OpenUrl', title: 'View in portal', url: PORTAL }]);
 }
 

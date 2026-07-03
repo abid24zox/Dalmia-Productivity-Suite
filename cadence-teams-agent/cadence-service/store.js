@@ -69,12 +69,12 @@ function summarizeInitiative(top) {
   };
 }
 
-// For the bot's initiative card: flatten every sub-work in the initiative's
-// subtree (works hold sub-works which hold activities in the 5-level model).
+// For the bot's initiative card: list every work under the initiative, each
+// holding its activities directly (4-level model: initiative -> work -> activity).
 function detailInitiative(top) {
   const base = summarizeInitiative(top);
   const ids = M.subtreeIds(db.works, top.id);
-  const subs = db.works.filter((w) => ids.includes(w.id) && w.level === 'subwork').map((s) => {
+  const works = db.works.filter((w) => ids.includes(w.id) && w.level === 'work').map((s) => {
     const m = M.computeMeters(db.works, db.acts, s.id);
     const activities = db.acts.filter((a) => a.workId === s.id).map((a) => ({
       id: a.id, title: a.title, assigneeId: a.assigneeId, assigneeName: a.assigneeId ? uName(a.assigneeId) : null,
@@ -84,7 +84,7 @@ function detailInitiative(top) {
     }));
     return { id: s.id, title: s.title, ownerId: s.ownerId, ownerName: uName(s.ownerId), planning: m.planning, execution: m.execution, activities };
   });
-  return { ...base, subworks: subs };
+  return { ...base, works };
 }
 
 /* ---------- reads (scoped, for the bot) ---------- */
@@ -183,7 +183,7 @@ function ensureHomeObjective() {
   if (!obj) { obj = { id: nid('w'), parentId: null, level: 'objective', title: 'New initiatives', type: 'general', ownerId: 'u_vik' }; db.works.push(obj); }
   return obj.id;
 }
-function createInitiative({ ownerId, title, type = 'general', objective, deadline, teamId, parentId, subworks = [] }) {
+function createInitiative({ ownerId, title, type = 'general', objective, deadline, teamId, parentId, works = [], subworks }) {
   const topId = nid('w');
   const tpl = METRIC_BY_TYPE[type] || METRIC_BY_TYPE.general;
   const t = teamId ? team(teamId) : null;
@@ -192,11 +192,14 @@ function createInitiative({ ownerId, title, type = 'general', objective, deadlin
   const top = { id: topId, parentId: parentObj, level: 'initiative', title, type, ownerId: ownerId || 'u_vik', teamId: teamId || null, scope: memberIds.length > 1 ? 'group' : 'individual', objective: objective || null, deadline: deadline || null, result: { metric: tpl.metric, unit: tpl.unit, baseline: 0, target: 100, current: 0 } };
   db.works.push(top);
   const newActs = [];
-  subworks.forEach((sw) => {
-    const sid = nid('w');
-    db.works.push({ id: sid, parentId: topId, level: 'subwork', title: sw.title, type, ownerId: ownerId || 'u_vik' });
-    (sw.activities || []).forEach((ac) => {
-      newActs.push({ id: nid('a'), workId: sid, title: ac.title, assigneeId: null, date: null, status: 'planned', plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || 'self' });
+  // 4-level model: initiative -> work -> activity. Accept `works`; fall back to
+  // legacy `subworks` payloads (treated as works) so older callers still work.
+  const workList = works.length ? works : (subworks || []);
+  workList.forEach((wk) => {
+    const wid = nid('w');
+    db.works.push({ id: wid, parentId: topId, level: 'work', title: wk.title, type, ownerId: ownerId || 'u_vik' });
+    (wk.activities || []).forEach((ac) => {
+      newActs.push({ id: nid('a'), workId: wid, title: ac.title, assigneeId: null, date: null, status: 'planned', plannedHrs: Number(ac.estimateHrs) || 2, actualHrs: null, actType: ac.type || 'self' });
     });
   });
   M.assignToTeam(db.acts, newActs, memberIds, deadline);
