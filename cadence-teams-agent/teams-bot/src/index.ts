@@ -14,7 +14,12 @@ const server = restify.createServer();
 server.use(restify.plugins.bodyParser());
 
 server.post('/api/messages', async (req, res) => {
-  await adapter.process(req, res as any, (context) => bot.run(context));
+  try {
+    await adapter.process(req, res as any, (context) => bot.run(context));
+  } catch (err: any) {
+    console.error('[/api/messages] rejected:', err?.message || err);
+    if (!res.headersSent) res.send(400, { error: 'invalid bot activity' });
+  }
 });
 
 server.get('/healthz', (_req, res, next) => { res.send(200, { status: 'ok' }); return next(); });

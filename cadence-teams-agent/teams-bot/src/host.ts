@@ -29,8 +29,18 @@ export function buildBot() {
 }
 
 // Mount POST /api/messages on an existing Express app (used by the merged server).
+// The handler MUST catch — adapter.process() rejects on malformed activities
+// (empty/garbage bodies from health probes or internet scanners), and an
+// unhandled rejection would crash the whole merged process (portal + API too).
 export function registerBot(app: any) {
   const { adapter, bot } = buildBot();
-  app.post('/api/messages', (req: any, res: any) => adapter.process(req, res, (context: any) => bot.run(context)));
+  app.post('/api/messages', async (req: any, res: any) => {
+    try {
+      await adapter.process(req, res, (context: any) => bot.run(context));
+    } catch (err: any) {
+      console.error('[/api/messages] rejected:', err?.message || err);
+      if (!res.headersSent) res.status(400).json({ error: 'invalid bot activity' });
+    }
+  });
   return { adapter, bot };
 }

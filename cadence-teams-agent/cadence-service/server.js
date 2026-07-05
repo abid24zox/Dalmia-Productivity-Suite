@@ -9,6 +9,10 @@ const cors = require('cors');
 const store = require('./store');
 const ai = require('./ai');
 
+// Safety net: never let a stray async rejection (e.g. a malformed /api/messages
+// body) take down the whole merged process — log it and keep serving.
+process.on('unhandledRejection', (reason) => console.error('Unhandled rejection:', reason));
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '30mb' })); // room for base64 docs / audio
