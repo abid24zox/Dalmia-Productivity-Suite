@@ -4,7 +4,7 @@
   "private": true,
   "description": "Cadence — React portal + shared Express service + Teams bot, deployed together as a single Azure App Service (one process serves the SPA, the /api REST + AI, and the bot's /api/messages).",
   "engines": {
-    "node": "20.x"
+    "node": ">=20"
   },
   "scripts": {
     "build:portal": "cd cadence-portal && npm install && npm run build",
