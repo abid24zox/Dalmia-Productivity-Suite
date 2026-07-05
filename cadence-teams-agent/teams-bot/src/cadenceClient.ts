@@ -28,7 +28,10 @@ export const cadence = {
   capacity: (userId: string) => call(`/api/capacity?userId=${encodeURIComponent(userId)}`),
   approvals: (userId: string) => call(`/api/approvals?userId=${encodeURIComponent(userId)}`),
   decideApproval: (id: string, body: any) => call(`/api/approvals/${id}/decide`, { method: 'POST', body: JSON.stringify(body) }),
-  resolve: (kind: 'user' | 'team' | 'initiative' | 'activity', q: string) =>
+  deliverables: (work: string) => call(`/api/deliverables?work=${encodeURIComponent(work)}`),
+  attachDeliverable: (workId: string, body: any) => call(`/api/works/${workId}/deliverables/attach`, { method: 'POST', body: JSON.stringify(body) }),
+  completeWork: (workId: string) => call(`/api/works/${workId}/complete`, { method: 'POST', body: '{}' }),
+  resolve: (kind: 'user' | 'team' | 'initiative' | 'activity' | 'work', q: string) =>
     call(`/api/resolve?kind=${kind}&q=${encodeURIComponent(q)}`).then((r) => r.match as { id: string; name: string } | null),
 };
 
@@ -36,3 +39,4 @@ export const cadence = {
 export async function needTeam(q: string) { const m = await cadence.resolve('team', q); if (!m) throw new Error(`No team matches "${q}". Ask the user which team.`); return m; }
 export async function needUser(q: string) { const m = await cadence.resolve('user', q); if (!m) throw new Error(`No person matches "${q}".`); return m; }
 export async function needActivity(q: string) { const m = await cadence.resolve('activity', q); if (!m) throw new Error(`No activity matches "${q}".`); return m; }
+export async function needWork(q: string) { const m = await cadence.resolve('work', q); if (!m) throw new Error(`No work matches "${q}". Ask the user which work package.`); return m; }

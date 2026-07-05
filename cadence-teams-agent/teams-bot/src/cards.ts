@@ -30,10 +30,14 @@ export function portfolioCard(p: any) {
 
 export function initiativeCard(i: any) {
   const gapTxt = i.result ? `${i.result.metric}: ${i.result.current} of ${i.result.target} ${i.result.unit} · gap ${i.gap} ${i.result.unit}` : 'No result metric';
+  const delivTxt = (s: any) => {
+    const d = s.deliverables; if (!d || !d.total) return '';
+    return ` · deliverables ${d.done}/${d.total}${d.avgScore != null ? ` · avg ${d.avgScore}` : ''}`;
+  };
   const subs = (i.subworks || []).map((s: any) => ({
     type: 'Container', spacing: 'Small', separator: true, items: [
-      { type: 'TextBlock', text: `${s.title}  —  P ${s.planning}% · E ${s.execution}%`, weight: 'Bolder', wrap: true },
-      ...s.activities.map((a: any) => ({ type: 'TextBlock', size: 'Small', wrap: true, color: a.overdue ? 'Attention' : a.blocked ? 'Warning' : 'Default', text: `• ${a.title} — ${a.assigneeName || 'Unassigned'} · ${a.date || 'no date'} · ${a.status}${a.blocked ? ' · blocked' : ''}` })),
+      { type: 'TextBlock', text: `${s.title}  —  P ${s.planning}% · E ${s.execution}%${s.completedAt ? ' · ✔ complete' : ''}${delivTxt(s)}`, weight: 'Bolder', wrap: true },
+      ...s.activities.map((a: any) => ({ type: 'TextBlock', size: 'Small', wrap: true, color: a.overdue ? 'Attention' : a.blocked ? 'Warning' : 'Default', text: `• ${a.title} — ${a.assigneeName || 'Unassigned'} · ${a.startDate ? a.startDate + ' → ' : ''}${a.date || 'no date'} · ${a.actualHrs || 0}/${a.plannedHrs}h · ${a.status}${a.blocked ? ' · blocked' : ''}` })),
     ],
   }));
   return card([
@@ -41,6 +45,7 @@ export function initiativeCard(i: any) {
     { type: 'FactSet', facts: [
       { title: 'Result', value: i.resultPct == null ? '—' : `${i.resultPct}%` }, { title: 'Gap to target', value: i.gap == null ? '—' : `${i.gap} ${i.result?.unit || ''}` },
       { title: 'Planning / Execution', value: `${i.planning}% / ${i.execution}%` }, { title: 'Status', value: `${i.rag.toUpperCase()} · ${i.sufficiency}` },
+      { title: 'Timeline', value: `${i.startDate || '?'} → ${i.endDate || i.deadline || '?'}` }, { title: 'Effort (actual/est)', value: i.effort ? `${i.effort.actual}/${i.effort.planned} h` : '—' },
     ] },
     { type: 'TextBlock', text: gapTxt, isSubtle: true, wrap: true, spacing: 'Small' },
     ...subs,
@@ -85,6 +90,38 @@ export function approvalsCard(pending: any[]) {
     ] });
   }
   return card(body);
+}
+
+const KIND_ICON: Record<string, string> = { document: '📄', spreadsheet: '📊', email: '✉️', slides: '📽️', other: '📎' };
+
+export function deliverablesCard(d: any) {
+  if (!d) return textCard('Deliverables', 'No matching work.');
+  const head = title(`${d.workTitle} — deliverables`, `${d.done}/${d.total} delivered${d.avgScore != null ? ` · avg ${d.avgScore}/100` : ''}${d.completedAt ? ' · ✔ complete' : ''}`);
+  if (!d.items.length) return card([head, { type: 'TextBlock', text: 'No deliverables defined on this work yet.', isSubtle: true, wrap: true }]);
+  const rows = d.items.map((it: any) => ({
+    type: 'ColumnSet', spacing: 'Small', separator: true, columns: [
+      { type: 'Column', width: 'auto', items: [{ type: 'TextBlock', text: it.done ? '✅' : '⬜', wrap: false }] },
+      { type: 'Column', width: 'stretch', items: [
+        { type: 'TextBlock', text: `${KIND_ICON[it.kind] || '📎'} ${it.label}`, wrap: true },
+        ...(it.file || it.verdict ? [{ type: 'TextBlock', text: `${it.file ? it.file : ''}${it.file && it.verdict ? ' · ' : ''}${it.verdict || ''}`, isSubtle: true, size: 'Small', spacing: 'None', wrap: true }] : []),
+      ] },
+      { type: 'Column', width: 'auto', items: [{ type: 'TextBlock', text: it.score != null ? `${it.score}/100` : '—', color: it.score != null ? 'Good' : 'Default', horizontalAlignment: 'Right' }] },
+    ],
+  }));
+  return card([head, ...rows], [{ type: 'Action.OpenUrl', title: 'Open portal', url: PORTAL }]);
+}
+
+export function deliverableLoggedCard(work: any, item: any, scored: boolean) {
+  const facts = [
+    { title: 'Work', value: work.title }, { title: 'Deliverable', value: item.label },
+    { title: 'File', value: item.file ? item.file.name : '—' }, { title: 'Status', value: 'Delivered ✅' },
+  ];
+  if (scored && typeof item.score === 'number') facts.push({ title: 'Score', value: `${item.score}/100 — ${item.verdict || ''}` });
+  return card([
+    title('Deliverable logged', `${KIND_ICON[item.kind] || '📎'} ${item.label}`),
+    { type: 'FactSet', facts },
+    ...(scored && item.feedback ? [{ type: 'TextBlock', text: item.feedback, wrap: true, isSubtle: true, spacing: 'Small' }] : []),
+  ], [{ type: 'Action.OpenUrl', title: 'Open in portal', url: PORTAL }]);
 }
 
 export function textCard(heading: string, msg: string) {

@@ -52,9 +52,21 @@ function snapshot() {
 }
 
 /* ---------- shapers (bot cards) ---------- */
+// Estimated / actual effort (hours) rolled up over a node's subtree, plus its
+// start→end timeline (earliest activity start → deadline / latest due).
+function effortSpan(topId, deadline) {
+  const ids = M.subtreeIds(db.works, topId);
+  const a = db.acts.filter((x) => ids.includes(x.workId) && x.status !== 'cancelled');
+  const planned = a.reduce((s, x) => s + (x.plannedHrs || 0), 0);
+  const actual = a.reduce((s, x) => s + (x.actualHrs || 0), 0);
+  const start = a.map((x) => x.startDate).filter(Boolean).sort()[0] || null;
+  const end = deadline || a.map((x) => x.date).filter(Boolean).sort().slice(-1)[0] || null;
+  return { effort: { planned, actual }, start, end };
+}
 function summarizeInitiative(top) {
   const m = M.computeMeters(db.works, db.acts, top.id);
   const st = M.workStats(db.works, db.acts, top.id);
+  const es = effortSpan(top.id, top.deadline);
   return {
     id: top.id, title: top.title, type: top.type, level: top.level,
     ownerId: top.ownerId, ownerName: uName(top.ownerId), fn: M.fnOf(top.ownerId),
@@ -65,6 +77,7 @@ function summarizeInitiative(top) {
     planning: m.planning, execution: m.execution, stuck: m.stuck,
     rag: M.nodeRag(db.works, db.acts, top.id), sufficiency: M.sufficiency(m, st),
     stats: { done: st.done, total: st.total, scheduled: st.scheduled, unscheduled: st.unscheduled, overdue: st.overdue, blocked: st.blocked, deliverables: st.deliv, nextDue: st.nextDue, teamSize: st.team.length },
+    effort: es.effort, startDate: es.start, endDate: es.end,
     gap: top.result ? Math.round((top.result.target - top.result.current) * 100) / 100 : null,
   };
 }
@@ -78,11 +91,13 @@ function detailInitiative(top) {
     const m = M.computeMeters(db.works, db.acts, s.id);
     const activities = db.acts.filter((a) => a.workId === s.id).map((a) => ({
       id: a.id, title: a.title, assigneeId: a.assigneeId, assigneeName: a.assigneeId ? uName(a.assigneeId) : null,
-      date: a.date, status: a.status, plannedHrs: a.plannedHrs, actType: a.actType,
+      startDate: a.startDate || null, date: a.date, status: a.status, plannedHrs: a.plannedHrs, actualHrs: a.actualHrs || 0, actType: a.actType,
       overdue: M.isOverdue(a), blocked: !!a.blocked, unplanned: !!a.unplanned,
-      deliverable: a.deliverable ? { score: a.deliverable.score, verdict: a.deliverable.verdict } : null,
     }));
-    return { id: s.id, title: s.title, ownerId: s.ownerId, ownerName: uName(s.ownerId), planning: m.planning, execution: m.execution, activities };
+    const dl = s.deliverables || [];
+    const dScored = dl.filter((d) => d.done && typeof d.score === 'number');
+    const deliverables = { total: dl.length, done: dl.filter((d) => d.done).length, avgScore: dScored.length ? Math.round(dScored.reduce((x, d) => x + d.score, 0) / dScored.length) : null };
+    return { id: s.id, title: s.title, ownerId: s.ownerId, ownerName: uName(s.ownerId), planning: m.planning, execution: m.execution, completedAt: s.completedAt || null, deliverables, activities };
   });
   // `works` is the current breakdown; `subworks` kept as an alias for the bot card.
   return { ...base, works: subs, subworks: subs };
@@ -158,6 +173,7 @@ function resolveUser(q) { const n = norm(q); return db.users.find((u) => norm(u.
 function resolveTeam(q) { const n = norm(q); return db.teams.find((t) => norm(t.name) === n) || db.teams.find((t) => norm(t.name).includes(n)) || bestTokenMatch(db.teams, q, (t) => t.name); }
 function resolveInitiative(q) { const n = norm(q); const inis = db.works.filter((w) => w.level === 'initiative'); return inis.find((w) => norm(w.title) === n) || inis.find((w) => norm(w.title).includes(n)) || db.works.find((w) => w.id === q) || bestTokenMatch(inis, q, (w) => w.title); }
 function resolveActivity(q) { const n = norm(q); return db.acts.find((a) => norm(a.title) === n) || db.acts.find((a) => norm(a.title).includes(n)) || db.acts.find((a) => a.id === q) || bestTokenMatch(db.acts, q, (a) => a.title); }
+function resolveWork(q) { const n = norm(q); const ws = db.works.filter((w) => w.level === 'work'); return ws.find((w) => norm(w.title) === n) || ws.find((w) => norm(w.title).includes(n)) || db.works.find((w) => w.id === q) || bestTokenMatch(ws, q, (w) => w.title); }
 
 /* ---------- generic writes (portal primitives) ---------- */
 // Adds accept client-provided ids so the portal's optimistic update and the
@@ -211,7 +227,7 @@ function scheduleActivity(activityId, { assigneeId, date }) {
   const a = db.acts.find((x) => x.id === activityId);
   if (!a) return null;
   if (assigneeId !== undefined) a.assigneeId = assigneeId;
-  if (date !== undefined) a.date = date;
+  if (date !== undefined) { a.date = date; if (date && !a.startDate) a.startDate = seed.iso(seed.addDays(M.parseISO(date), -Math.max(1, Math.round((a.plannedHrs || 2) / 3)))); }
   return a;
 }
 
@@ -248,12 +264,61 @@ function decideApproval(crId, { approve, remark, spinoff, approverId }) {
 
 function createTeam(name, memberIds) { const t = { id: nid('t'), name, memberIds }; db.teams.push(t); return t; }
 
+/* ---------- deliverables (work-level checklist; bot + portal write these) ---------- */
+const getWork = (id) => db.works.find((w) => w.id === id) || null;
+const normLabel = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+// Read a work's deliverable checklist by id or title (for the bot to show/pick).
+function workDeliverables(q) {
+  const w = resolveWork(q); if (!w) return null;
+  const dl = w.deliverables || [];
+  const sc = dl.filter((d) => d.done && typeof d.score === 'number');
+  return {
+    workId: w.id, workTitle: w.title, completedAt: w.completedAt || null,
+    done: dl.filter((d) => d.done).length, total: dl.length,
+    avgScore: sc.length ? Math.round(sc.reduce((s, d) => s + d.score, 0) / sc.length) : null,
+    items: dl.map((d) => ({ id: d.id, label: d.label, kind: d.kind, done: !!d.done, score: typeof d.score === 'number' ? d.score : null, verdict: d.verdict || null, file: d.file ? d.file.name : null })),
+  };
+}
+
+// Attach/score a file against ONE checklist item. Matches by id or fuzzy label.
+// If no item matches: creates one only when explicitly told to, or when the work
+// has no checklist yet; otherwise returns { unmatched, available } so the caller
+// can ask which item.
+function attachDeliverable(workId, { deliverableId, label, kind, file, score, verdict, feedback, create } = {}) {
+  const w = getWork(workId); if (!w) return null;
+  w.deliverables = w.deliverables || [];
+  let item = deliverableId ? w.deliverables.find((d) => d.id === deliverableId) : null;
+  if (!item && label) { const ln = normLabel(label); item = w.deliverables.find((d) => normLabel(d.label) === ln) || w.deliverables.find((d) => { const dn = normLabel(d.label); return dn && (dn.includes(ln) || ln.includes(dn)); }); }
+  if (!item) {
+    const canCreate = create || w.deliverables.length === 0;
+    if (!label || !canCreate) return { work: w, item: null, unmatched: true, available: w.deliverables.map((d) => d.label) };
+    item = { id: nid('d'), label, kind: kind || 'other', done: false, doneAt: null, file: null, score: null, verdict: null, feedback: null };
+    w.deliverables.push(item);
+  }
+  item.done = true; item.doneAt = seed.iso(seed.TODAY);
+  if (file) item.file = file;
+  if (typeof score === 'number') { item.score = score; item.verdict = verdict || null; item.feedback = feedback || null; }
+  return { work: w, item };
+}
+
+// Mark a work complete: set every open activity executed + stamp completedAt.
+function completeWork(workId) {
+  const w = getWork(workId); if (!w) return null;
+  const acts = db.acts.filter((a) => a.workId === workId && a.status !== 'cancelled');
+  let completed = 0;
+  acts.forEach((a) => { if (a.status !== 'executed') { a.status = 'executed'; a.actualHrs = a.actualHrs != null ? a.actualHrs : a.plannedHrs; a.inProgress = false; a.onHold = false; completed++; } });
+  w.completedAt = seed.iso(seed.TODAY);
+  return { work: w, activitiesCompleted: completed, totalActivities: acts.length };
+}
+
 module.exports = {
   db, nid, user, uName, team, METRIC_BY_TYPE,
   login, snapshot,
   summarizeInitiative, detailInitiative,
   getPortfolio, getAttention, getCapacity, getApprovals,
-  resolveUser, resolveTeam, resolveInitiative, resolveActivity,
+  resolveUser, resolveTeam, resolveInitiative, resolveActivity, resolveWork,
   addWorks, patchWork, deleteWork, addActs, patchAct, deleteAct, addCr, patchCr, addTeam, patchTeam, addRemark, markRemarksRead,
   createInitiative, scheduleActivity, reassignActivity, decideApproval, createTeam,
+  getWork, workDeliverables, attachDeliverable, completeWork,
 };

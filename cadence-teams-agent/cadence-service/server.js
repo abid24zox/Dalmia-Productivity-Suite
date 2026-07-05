@@ -66,6 +66,7 @@ app.get('/api/resolve', (req, res) => {
   else if (kind === 'team') e = store.resolveTeam(q);
   else if (kind === 'initiative') e = store.resolveInitiative(q);
   else if (kind === 'activity') e = store.resolveActivity(q);
+  else if (kind === 'work') e = store.resolveWork(q);
   ok(res, { match: e ? { id: e.id, name: e.name || e.title } : null });
 });
 
@@ -86,6 +87,26 @@ app.post('/api/initiatives', (req, res) => {
 app.post('/api/works', (req, res) => { const works = store.addWorks(req.body?.works || req.body); withSnap(res, { works }); });
 app.patch('/api/works/:id', (req, res) => { const w = store.patchWork(req.params.id, req.body || {}); if (!w) return bad(res, 'work not found', 404); withSnap(res, { work: w }); });
 app.delete('/api/works/:id', (req, res) => { withSnap(res, store.deleteWork(req.params.id)); });
+
+/* ---------- deliverables (work-level checklist; bot logs files here) ---------- */
+// Read a work's checklist by id or title.
+app.get('/api/deliverables', (req, res) => { const d = store.workDeliverables(req.query.work); if (!d) return bad(res, `No work matches "${req.query.work}".`, 404); ok(res, d); });
+// Attach (and optionally AI-score) a file against one checklist item. Extraction
+// + scoring run server-side so the bot only forwards the raw file.
+app.post('/api/works/:id/deliverables/attach', async (req, res) => {
+  const { label, deliverableId, kind, fileBase64, fileName, score, create } = req.body || {};
+  const w = store.getWork(req.params.id);
+  if (!w) return bad(res, 'work not found', 404);
+  let content = '', scored = null;
+  if (fileBase64) { try { content = await ai.extract(fileBase64, fileName); } catch { /* unreadable file — still record the attachment */ } }
+  if (score !== false && content && content.trim()) { try { scored = await ai.scoreDeliverable(w.title, label, content); } catch { /* scoring optional */ } }
+  const r = store.attachDeliverable(w.id, { label, deliverableId, kind, create, file: fileName ? { name: fileName } : null, score: scored ? scored.score : undefined, verdict: scored ? scored.verdict : undefined, feedback: scored ? scored.feedback : undefined });
+  if (!r) return bad(res, 'work not found', 404);
+  if (r.unmatched) return bad(res, `No deliverable on "${w.title}" matches "${label || ''}". Available: ${r.available.length ? r.available.join(', ') : 'none — pass create=true to add it'}.`);
+  withSnap(res, { work: r.work, item: r.item, scored: !!scored });
+});
+// Mark a work (and its open activities) complete.
+app.post('/api/works/:id/complete', (req, res) => { const r = store.completeWork(req.params.id); if (!r) return bad(res, 'work not found', 404); withSnap(res, r); });
 
 app.post('/api/activities', (req, res) => { const acts = store.addActs(req.body?.activities || req.body); withSnap(res, { activities: acts }); });
 app.patch('/api/activities/:id', (req, res) => { const a = store.patchAct(req.params.id, req.body || {}); if (!a) return bad(res, 'activity not found', 404); withSnap(res, { activity: a }); });

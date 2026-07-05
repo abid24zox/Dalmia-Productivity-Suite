@@ -26,7 +26,16 @@
       "Bash(curl -s http://localhost:4000/api/snapshot)",
       "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(s\\);console.log\\('users',j.users.length,'works',j.works.length,'acts',j.acts.length,'crs',j.crs.length\\);console.log\\('objectives:',j.works.filter\\(w=>w.level==='objective'\\).map\\(w=>w.title\\).join\\(' | '\\)\\);}\\)\")",
       "Bash(curl -s http://localhost:4000/api/health)",
-      "Bash(netstat -ano)"
+      "Bash(netstat -ano)",
+      "Bash(node -e \"const p=require\\('./package.json'\\);console.log\\(JSON.stringify\\(p.scripts,null,2\\)\\);console.log\\('deps:',Object.keys\\(p.dependencies||{}\\).join\\(', '\\)\\)\")",
+      "Bash(npx ts-node *)",
+      "Bash(npm start *)",
+      "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(s\\);const a=j.acts.find\\(x=>x.id==='a1'\\);console.log\\('sample a1:', JSON.stringify\\({title:a.title,startDate:a.startDate,date:a.date,plannedHrs:a.plannedHrs,actualHrs:a.actualHrs}\\)\\);console.log\\('acts with startDate:', j.acts.filter\\(x=>x.startDate\\).length,'/',j.acts.length\\);}\\)\")",
+      "PowerShell(npm install --prefix cadence-teams-agent/cadence-service @kenjiuno/msgreader@^1.22.0 mailparser@^3.7.1 xlsx@^0.18.5 2>&1)",
+      "Bash(node -e ' *)",
+      "PowerShell(foreach \\($port in 4000,5173\\) { $c = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue; if \\($c\\) { \"port $port : LISTENING \\(pid $\\($c.OwningProcess | Select-Object -First 1\\)\\)\" } else { \"port $port : free\" } })",
+      "PowerShell($p = \"C:\\\\Users\\\\ASUS\\\\Desktop\\\\Dalmia v2\\\\cadence-teams-agent\\\\teams-bot\"; & \"$p\\\\node_modules\\\\.bin\\\\tsc.cmd\" --noEmit -p $p 2>&1 | Select-Object -First 30; \"tsc exit=$LASTEXITCODE\")",
+      "Bash(node -e \"require\\('./server'\\); require\\('./ai'\\).scoreDeliverable; console.log\\('service loads OK; scoreDeliverable exported:', typeof require\\('./ai'\\).scoreDeliverable\\);\")"
     ]
   }
 }

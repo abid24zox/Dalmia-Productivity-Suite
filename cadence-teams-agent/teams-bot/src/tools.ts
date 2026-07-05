@@ -2,8 +2,10 @@
 // Foundry model sees; `makeDispatch` executes a chosen tool against the Cadence
 // API and returns { data } (fed back to the model) and an optional { card }
 // (shown to the user).
-import { cadence, needTeam, needUser, needActivity } from './cadenceClient';
+import { cadence, needTeam, needUser, needActivity, needWork } from './cadenceClient';
 import * as cards from './cards';
+
+export type ChatFile = { name: string; base64: string };
 
 export const tools = [
   { type: 'function', function: { name: 'get_portfolio', description: "Show the caller's portfolio/scorecard, scoped to their level (MD sees the enterprise; a VP sees their function; a member sees their own work). Use for 'how are we doing', 'what's the portfolio', 'what's at risk overall'.", parameters: { type: 'object', properties: {} } } },
@@ -16,9 +18,12 @@ export const tools = [
   { type: 'function', function: { name: 'decide_approval', description: 'Approve or reject a pending change by its id. Optionally add a remark and spin off a follow-up initiative from it.', parameters: { type: 'object', properties: { change_id: { type: 'string' }, approve: { type: 'boolean' }, remark: { type: 'string' }, spinoff: { type: 'boolean' } }, required: ['change_id', 'approve'] } } },
   { type: 'function', function: { name: 'team_capacity', description: 'Show open-work load per person, to see who is free or overloaded before assigning.', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'list_teams', description: 'List the teams and their members (for choosing who to assign to, or to confirm a merge).', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'list_deliverables', description: "Show a work package's deliverables checklist — the concrete outputs it must produce, which are delivered/scored, and whether the work is complete. Use before logging a file so you know the exact item labels.", parameters: { type: 'object', properties: { work: { type: 'string', description: 'Work package title or a distinctive part, e.g. "process mapping" or "demand".' } }, required: ['work'] } } },
+  { type: 'function', function: { name: 'log_deliverable', description: "Log the file the user ATTACHED to their current message against a deliverable on a work, marking it delivered and (by default) AI-scoring it. Only call this when the user actually attached a file. If unsure of the exact deliverable label, call list_deliverables first.", parameters: { type: 'object', properties: { work: { type: 'string', description: 'Work package title or distinctive part.' }, deliverable: { type: 'string', description: 'The checklist item label to log against (fuzzy-matched), e.g. "vendor quotes".' }, score: { type: 'boolean', description: 'Whether to AI-score the file (default true).' }, create: { type: 'boolean', description: 'Set true to add the deliverable as a new checklist item when it does not already exist.' } }, required: ['work', 'deliverable'] } } },
+  { type: 'function', function: { name: 'complete_work', description: 'Mark a work package complete — sets all its open activities to executed and stamps it done. Use when the user says a work is finished, ideally once its deliverables are in.', parameters: { type: 'object', properties: { work: { type: 'string', description: 'Work package title or distinctive part.' } }, required: ['work'] } } },
 ];
 
-export function makeDispatch(ctx: { userId: string }) {
+export function makeDispatch(ctx: { userId: string; file?: ChatFile | null }) {
   return async function dispatch(name: string, args: any): Promise<{ data: any; card?: any }> {
     try {
       switch (name) {
@@ -69,6 +74,21 @@ export function makeDispatch(ctx: { userId: string }) {
         case 'list_teams': {
           const t = await cadence.teams();
           return { data: t };
+        }
+        case 'list_deliverables': {
+          const d = await cadence.deliverables(args.work);
+          return { data: d, card: cards.deliverablesCard(d) };
+        }
+        case 'log_deliverable': {
+          if (!ctx.file) return { data: { error: 'No file is attached to this message. Ask the user to attach the file to the same message and try again.' } };
+          const w = await needWork(args.work);
+          const res = await cadence.attachDeliverable(w.id, { label: args.deliverable, fileBase64: ctx.file.base64, fileName: ctx.file.name, score: args.score !== false, create: !!args.create });
+          return { data: { ok: true, item: res.item, scored: res.scored }, card: cards.deliverableLoggedCard(res.work, res.item, res.scored) };
+        }
+        case 'complete_work': {
+          const w = await needWork(args.work);
+          const res = await cadence.completeWork(w.id);
+          return { data: res, card: cards.textCard('Work marked complete', `“${res.work.title}” — ${res.activitiesCompleted} of ${res.totalActivities} ${res.totalActivities === 1 ? 'activity' : 'activities'} set to executed.`) };
         }
         default:
           return { data: { error: `unknown tool ${name}` } };

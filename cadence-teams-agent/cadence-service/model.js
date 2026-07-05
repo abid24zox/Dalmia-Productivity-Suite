@@ -43,7 +43,8 @@ function workStats(works, acts, topId) {
   const overdue = a.filter((x) => isOverdue(x)).length;
   const unscheduled = a.length - scheduled;
   const team = [...new Set(a.map((x) => x.assigneeId).filter(Boolean))];
-  const deliv = a.filter((x) => x.deliverable).length;
+  // deliverables now live on the work nodes (a checklist), not on activities
+  const deliv = works.filter((w) => ids.includes(w.id)).reduce((s, w) => s + (w.deliverables || []).filter((d) => d.done).length, 0);
   const blocked = a.filter((x) => x.blocked && x.status !== 'executed').length;
   const nextDue = a.filter((x) => x.date && x.status !== 'executed').map((x) => x.date).sort()[0] || null;
   return { total: a.length, done, scheduled, unscheduled, overdue, blocked, team, deliv, nextDue };
@@ -101,6 +102,8 @@ function assignToTeam(acts, activities, memberIds, deadline) {
     load[pick] += act.plannedHrs || 2;
     act.assigneeId = pick;
     act.date = iso(addDays(TODAY, i % span));
+    // give it a real start→end timeline (start spread back by ~effort), like the seed
+    act.startDate = iso(addDays(parseISO(act.date), -Math.max(1, Math.round((act.plannedHrs || 2) / 3))));
     i++;
   }
   return activities;

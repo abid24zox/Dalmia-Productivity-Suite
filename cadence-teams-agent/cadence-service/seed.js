@@ -171,6 +171,51 @@ const ACTIVITIES = [
   { id: 'g4', workId: 'w5W2', title: 'Publish annual L&D calendar', description: 'Published annual learning & development calendar.', assigneeId: 'u_raj', date: D(-1), status: 'executed', plannedHrs: 2, actualHrs: 2, actType: 'self' },
 ];
 
+// Give every activity a real START date (the due `date` is the end). We spread it
+// back from the due date proportional to the estimated effort (~1 working day per
+// 3 planned hours, min 1 day), so each activity has a genuine start→end timeline.
+const parseDate = (s) => sod(new Date(s + 'T00:00:00'));
+ACTIVITIES.forEach((a) => {
+  if (a.date && !a.startDate) a.startDate = iso(addDays(parseDate(a.date), -Math.max(1, Math.round((a.plannedHrs || 2) / 3))));
+});
+
+// ===== Deliverables (work-level) =====
+// Each leaf work carries a checklist of the concrete outputs it should produce —
+// documents, spreadsheets, emails, decks. Owners tick them off (attaching the
+// file) and can AI-score each one. When every item is delivered the work can be
+// marked complete; `completedAt` records that. `kind` drives the icon:
+// document | spreadsheet | email | slides | other.
+let _did = 0;
+const mkD = (label, kind, extra = {}) => ({ id: `d${++_did}`, label, kind, done: false, doneAt: null, file: null, score: null, verdict: null, feedback: null, ...extra });
+const scored = (name, doneAgo, score, verdict, feedback) => ({ done: true, doneAt: D(doneAgo), file: { name }, score, verdict, feedback });
+const DELIVERABLES = {
+  // w5W1 — Competency framework: fully delivered + scored (work is complete)
+  w5W1: [
+    mkD('Role competency matrix', 'spreadsheet', scored('competency-matrix.xlsx', -3, 88, 'Comprehensive & clear', 'Covers all key roles with levelled competencies; minor gaps in cross-functional roles.')),
+    mkD('Leadership sign-off note', 'document', scored('leadership-signoff.docx', -2, 82, 'Approved with notes', 'Captures approval and two follow-up actions to close out.')),
+  ],
+  // w2W1 — Freight optimisation: partly delivered
+  w2W1: [
+    mkD('Lane cost baseline', 'spreadsheet', scored('lane-cost-baseline.xlsx', -6, 79, 'Solid baseline', 'Cost-per-lane mapped across primary routes; extend to secondary lanes next.')),
+    mkD('Route consolidation model', 'spreadsheet'),
+    mkD('3PL rate negotiation email', 'email'),
+  ],
+  // w1W1 — Demand & selection: one delivered but unscored, two pending
+  w1W1: [
+    mkD('Staff demand survey summary', 'document', { done: true, doneAt: D(-3), file: { name: 'demand-summary.pdf' } }),
+    mkD('Standard laptop spec sheet', 'document'),
+    mkD('Three vendor quotes', 'spreadsheet'),
+  ],
+  // w4bW1 — Process mapping: fresh checklist, nothing delivered yet
+  w4bW1: [
+    mkD('Order-to-dispatch process map', 'slides'),
+    mkD('Bottleneck analysis', 'spreadsheet'),
+  ],
+};
+WORKS.forEach((w) => { if (DELIVERABLES[w.id]) w.deliverables = DELIVERABLES[w.id]; });
+// works whose whole checklist is delivered are stamped complete
+['w5W1'].forEach((id) => { const w = WORKS.find((x) => x.id === id); if (w) w.completedAt = D(-2); });
+
 const CRS = [
   { id: 'cr1', workId: 'w1', targetWorkId: 'w1W1', proposerId: 'u_roh', kind: 'add_activity', desc: 'Found 3 depots missed in the first survey — need a quick re-run.', payload: { title: 'Re-run survey for 3 missed depots', hrs: 2, type: 'self' }, status: 'pending' },
   { id: 'cr2', workId: 'w2', targetWorkId: 'w2W1', proposerId: 'u_neh', kind: 'extend', desc: 'Route model needs another pass after the new lane data landed.', payload: { activityId: 'a11', hrs: 2 }, status: 'pending' },
