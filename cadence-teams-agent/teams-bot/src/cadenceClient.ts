@@ -1,7 +1,10 @@
 // Thin HTTP client to the shared Cadence service. All agent tools go through
 // here, so the bot never touches state directly — Teams actions become Cadence
 // API calls, which the portal then reads.
-const BASE = process.env.CADENCE_API_URL || 'http://localhost:4000';
+// In the merged single-App-Service deploy the API lives in THIS process, so
+// default to our own port (App Service sets PORT). Standalone bot dev overrides
+// with CADENCE_API_URL pointing at the separately-running service.
+const BASE = process.env.CADENCE_API_URL || `http://localhost:${process.env.PORT || 4000}`;
 const KEY = process.env.CADENCE_API_KEY || '';
 
 async function call(path: string, init: RequestInit = {}): Promise<any> {

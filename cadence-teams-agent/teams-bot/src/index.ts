@@ -1,30 +1,14 @@
-// Host process: restify server + Bot Framework CloudAdapter. Uses your existing
-// Azure Bot Service registration (App ID / password / tenant from env).
+// Standalone host: restify server + Bot Framework CloudAdapter. Uses your Azure
+// Bot Service registration (App ID / password / tenant from env). This runs the
+// bot on its OWN process/port — used for local dev against an ngrok tunnel. In
+// production the bot is instead mounted in-process by the merged Cadence server
+// (see cadence-service/server.js → teams-bot/dist/host registerBot), so a single
+// Azure App Service serves the portal, the API, and /api/messages together.
 import 'dotenv/config';
 import * as restify from 'restify';
-import {
-  CloudAdapter,
-  ConfigurationServiceClientCredentialFactory,
-  ConfigurationBotFrameworkAuthentication,
-  TurnContext,
-} from 'botbuilder';
-import { CadenceBot } from './bot';
+import { buildBot } from './host';
 
-const credentialsFactory = new ConfigurationServiceClientCredentialFactory({
-  MicrosoftAppId: process.env.MICROSOFT_APP_ID,
-  MicrosoftAppPassword: process.env.MICROSOFT_APP_PASSWORD,
-  MicrosoftAppType: process.env.MICROSOFT_APP_TYPE || 'MultiTenant',
-  MicrosoftAppTenantId: process.env.MICROSOFT_APP_TENANT_ID,
-});
-const botFrameworkAuthentication = new ConfigurationBotFrameworkAuthentication({}, credentialsFactory);
-const adapter = new CloudAdapter(botFrameworkAuthentication);
-
-adapter.onTurnError = async (context: TurnContext, error: Error) => {
-  console.error('[onTurnError]', error);
-  await context.sendActivity('The Cadence agent hit an error. Please try again.');
-};
-
-const bot = new CadenceBot();
+const { adapter, bot } = buildBot();
 
 const server = restify.createServer();
 server.use(restify.plugins.bodyParser());

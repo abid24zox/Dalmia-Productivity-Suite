@@ -2,6 +2,8 @@
 // portal read from and write to. Single source of truth. Start: `npm start`
 // (PORT 4000).
 require('dotenv/config');
+const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
 const store = require('./store');
@@ -14,12 +16,14 @@ app.use(express.json({ limit: '30mb' })); // room for base64 docs / audio
 // light request log
 app.use((req, _res, next) => { console.log(`${req.method} ${req.url}`); next(); });
 
-// Optional shared-secret guard (set CADENCE_API_KEY to enable). Login, health,
-// and AI stay open so the browser portal can reach them without embedding a key.
+// Optional shared-secret guard (set CADENCE_API_KEY to enable). Only applies to
+// /api/* — the portal's own static files are public. Login, health, AI, and the
+// bot's /api/messages (which carries its own Bot Framework auth) stay open.
 app.use((req, res, next) => {
   const key = process.env.CADENCE_API_KEY;
   if (!key) return next();
-  if (['/api/health', '/api/login'].includes(req.path) || req.path.startsWith('/api/ai')) return next();
+  if (!req.path.startsWith('/api')) return next();
+  if (['/api/health', '/api/login', '/api/messages'].includes(req.path) || req.path.startsWith('/api/ai')) return next();
   if (req.get('x-api-key') === key) return next();
   return res.status(401).json({ error: 'unauthorized' });
 });
@@ -141,8 +145,36 @@ app.post('/api/ai/transcribe', async (req, res) => {
   catch (e) { aiErr(res, e); }
 });
 
+/* ---------- single-App-Service extras: mount the bot + serve the portal ----------
+   In production one Azure App Service runs this process, which serves the REST
+   API (above), the Teams bot's /api/messages, AND the built portal SPA. Both
+   extras are optional so local `npm run dev` (API only) still works: the bot is
+   mounted only if it's been compiled, and the portal only if it's been built. */
+
+// Mount the Teams bot in-process (needs teams-bot to be built → dist/host.js).
+try {
+  const { registerBot } = require('../teams-bot/dist/host');
+  registerBot(app);
+  console.log('Teams bot mounted at /api/messages');
+} catch (e) {
+  console.log(`Teams bot not mounted (build the bot to enable /api/messages): ${e.message}`);
+}
+
+// Serve the built portal (SPA). Must come AFTER the API routes so /api/* wins.
+const PORTAL_DIST = path.join(__dirname, '..', '..', 'cadence-portal', 'dist');
+if (fs.existsSync(PORTAL_DIST)) {
+  app.use(express.static(PORTAL_DIST));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) return next(); // let unknown API paths 404 as JSON
+    res.sendFile(path.join(PORTAL_DIST, 'index.html'));
+  });
+  console.log('Serving portal from', PORTAL_DIST);
+} else {
+  console.log('Portal build not found (run the portal build to serve the SPA from here).');
+}
+
 const PORT = process.env.PORT || 4000;
 if (require.main === module) {
-  app.listen(PORT, () => console.log(`Cadence service on http://localhost:${PORT}  (Foundry: ${ai.hasFoundry ? 'on' : 'off'})`));
+  app.listen(PORT, () => console.log(`Cadence server on http://localhost:${PORT}  (Foundry: ${ai.hasFoundry ? 'on' : 'off'})`));
 }
 module.exports = app;
