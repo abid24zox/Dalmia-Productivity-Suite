@@ -21,7 +21,9 @@ Cadence is an execution platform where enterprise work is planned and operated a
 | [`cadence-teams-agent/teams-bot/`](cadence-teams-agent/teams-bot) | The **Teams bot** — Bot Framework + a Foundry tool-calling loop. Each tool maps to a service action and returns an Adaptive Card. See the [agent README](cadence-teams-agent/README.md). |
 | `cadence-prototype-v13.jsx` | The original single-file portal prototype (reference only). `cadence-portal/src/App.jsx` is its live-wired evolution. |
 
-## Run it (three terminals)
+## Run it locally (three terminals)
+
+For local development each piece runs on its own port. (In production they run as **one process** — see [Deploy](#deploy--single-azure-app-service).)
 
 ```bash
 # 1) shared service (source of truth + AI + STT)  → http://localhost:4000
@@ -46,10 +48,30 @@ Sign in to the portal with a test account, e.g. **`vikram / md@2026`** (MD), `pr
 
 For the bot to receive Teams messages, expose port 3978 with a tunnel (e.g. `ngrok http 3978`) and set your Azure Bot's **messaging endpoint** to `https://<tunnel>/api/messages`.
 
+## Deploy — single Azure App Service
+
+In production the three pieces run as **one Node process**: the Express service *also* serves the built portal SPA and mounts the Teams bot at `/api/messages`. So a single App Service (one URL) hosts everything.
+
+- **Entry point:** `node cadence-teams-agent/cadence-service/server.js` (root `npm start`).
+- **Build:** root `npm run build` installs + builds the portal (`cadence-portal/dist`) and the bot (`teams-bot/dist`), then installs the service. `dist/` is git-ignored, so the host builds on deploy.
+- One request map: `GET /` + `/assets/*` → portal · `/api/*` → REST + AI · `POST /api/messages` → bot.
+
+### Steps
+
+1. **Create an App Service** — Linux, **Node 20 LTS**, **Always On** = on (so the bot never sleeps).
+2. **Deployment Center → GitHub →** branch **`deploy/single-appservice`**. Use the App Service (Oryx) build and add app setting `SCM_DO_BUILD_DURING_DEPLOYMENT=true`. Startup command: `npm start`. (Building on Azure is required — `dist/` is never committed.)
+3. **App Settings** (env vars):
+   - *Runtime (service + bot):* `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_VERSION`, `DEEPGRAM_API_KEY`, `MICROSOFT_APP_ID`, `MICROSOFT_APP_PASSWORD`, `MICROSOFT_APP_TYPE`, `MICROSOFT_APP_TENANT_ID`.
+   - *Build-time for the portal* (Vite bakes these into the bundle, so they must be set **before** the build): `VITE_MSAL_CLIENT_ID`, `VITE_MSAL_TENANT_ID`. Leave `VITE_CADENCE_API_URL` **unset** so the portal calls same-origin `/api`.
+4. **Repoint the bot** — Azure Bot → messaging endpoint → `https://<app>.azurewebsites.net/api/messages`. And on the AAD app registration, add `https://<app>.azurewebsites.net` as an **SPA redirect URI** (so MSAL / OneDrive / Calendar work in prod).
+5. **Verify** — `https://<app>.azurewebsites.net/api/health` returns `{status:"ok"}`, the site loads, and the Teams bot answers.
+
+Keep the plan at a **single instance** — the store is in-memory (see Notes).
+
 ## How it stays consistent
 
 - **One model, one store.** Both surfaces read/write the same service; the portal renders the raw tree and the bot reads summarized shapes — computed by identical logic so they never disagree.
-- **One AI.** The portal's in-house AI, document extraction (PDF/DOCX/MD/TXT), and speech-to-text all run server-side through the same Azure Foundry deployment the bot uses. No model or STT keys in the browser.
+- **One AI.** The portal's in-house AI, document extraction (PDF / DOCX / XLSX / CSV / EML / MSG / MD / TXT), and speech-to-text all run server-side through the same Azure Foundry deployment the bot uses. No model or STT keys in the browser.
 - **Sync.** Optimistic local update → persist to the service → reconcile to the returned snapshot, plus a ~3.5s poll so cross-surface changes appear automatically.
 
 ## Notes
