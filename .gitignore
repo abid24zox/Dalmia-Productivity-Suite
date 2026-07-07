@@ -40,3 +40,6 @@ pids/
 Thumbs.db
 *.swp
 *~
+
+# ---- local-only docs (not for version control) ----
+CADENCE_OVERVIEW.*

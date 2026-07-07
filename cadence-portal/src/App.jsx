@@ -617,8 +617,8 @@ export default function App() {
   return (
     <div className="w-full bg-stone-50 text-slate-800" style={{ minHeight: 720, fontFeatureSettings: '"tnum"' }}>
       <div className="flex items-center justify-between border-b border-slate-200 bg-white px-3 py-3 sm:px-5">
-        <div className="flex min-w-0 items-center gap-2.5"><div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-slate-900 font-mono text-sm text-white">C</div><div className="min-w-0"><div className="text-sm font-medium leading-none text-slate-900">Cadence</div><div className="mt-0.5 hidden text-xs text-slate-400 sm:block">work &amp; initiative OS · prototype</div></div></div>
-        <div className="flex shrink-0 items-center gap-2 sm:gap-3"><OneDriveConnect compact /><button onClick={() => setFollowUpsOpen(true)} className={`${btnLight} relative`} title="Follow-ups — email nudges"><Mail size={14} />{followUpCount > 0 && <span className="absolute -right-1.5 -top-1.5 rounded-full bg-rose-500 px-1 text-xs font-medium text-white">{followUpCount}</span>}</button><button onClick={openNudges} className={`${btnLight} relative`} title="Nudges"><MessageSquare size={14} />{unreadNudges > 0 && <span className="absolute -right-1.5 -top-1.5 rounded-full bg-rose-500 px-1 text-xs font-medium text-white">{unreadNudges}</span>}</button><div className="hidden items-center gap-2 sm:flex"><Avatar id={me.id} size={28} /><div className="text-right"><div className="text-xs font-medium text-slate-700">{me.name}</div><div className="text-xs text-slate-400">{me.title} · {me.level}</div></div></div><button onClick={logout} className={btnLight}><LogOut size={14} /></button></div>
+        <div className="flex min-w-0 items-center gap-2.5"><div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-slate-900 font-mono text-sm text-white">C</div><div className="min-w-0"><div className="text-sm font-medium leading-none text-slate-900">Cadence</div><div className="mt-0.5 hidden text-xs text-slate-400 sm:block">Work &amp; Initiative OS </div></div></div>
+        <div className="flex shrink-0 items-center gap-2 sm:gap-3"><OneDriveConnect compact /><button onClick={() => setFollowUpsOpen(true)} className={`${btnLight} relative`} title="Follow-ups — email nudges"><Mail size={14} />{followUpCount > 0 && <span className="absolute -right-1.5 -top-1.5 rounded-full bg-rose-500 px-1 text-xs font-medium text-white">{followUpCount}</span>}</button><button onClick={openNudges} className={`${btnLight} relative`} title="Nudges"><MessageSquare size={14} />{unreadNudges > 0 && <span className="absolute -right-1.5 -top-1.5 rounded-full bg-rose-500 px-1 text-xs font-medium text-white">{unreadNudges}</span>}</button><div className="hidden items-center gap-2 sm:flex"><Avatar id={me.id} size={28} /><div className="text-right"><div className="text-xs font-medium text-slate-700">{me.name}</div><div className="text-xs text-slate-400">{me.title} · {me.level === "md" ? "ceo" : me.level}</div></div></div><button onClick={logout} className={btnLight}><LogOut size={14} /></button></div>
       </div>
       <div className="flex flex-col gap-1.5 border-b border-slate-200 bg-white px-3 py-1.5 sm:flex-row sm:items-center sm:gap-1 sm:px-5 sm:py-0">
         <div className="-mx-1 flex items-center gap-1 overflow-x-auto px-1">
@@ -632,7 +632,7 @@ export default function App() {
       {note && <div className="mx-3 mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 sm:mx-5">{note}</div>}
       <div className="p-3 sm:p-5">
         {tab === "portfolio" && !open && <Portfolio {...{ works, acts, crs, me, isOrg, teams, onOpen: openNode, onFocus: goData, goApprovals, view: portView, setView: setPortView, reviewMode, setReviewMode, onRemark: setRemarkNode, patchAct, flash }} />}
-        {tab === "portfolio" && open && <NodeView {...{ nodeId: openId, user: me, works, acts, crs, teams, isOrg, busy, setBusy, flash, patchAct, patchWork, store, onOpen: openNode, onRemark: setRemarkNode, goApprovals }} />}
+        {tab === "portfolio" && open && <NodeView key={openId} {...{ nodeId: openId, user: me, works, acts, crs, teams, isOrg, busy, setBusy, flash, patchAct, patchWork, store, onOpen: openNode, onRemark: setRemarkNode, goApprovals }} />}
         {tab === "data" && <DataPage {...{ me, works, acts, onOpen: openNode, focus: dataFocus, patchAct, flash }} />}
         {tab === "myday" && <MyDay {...{ me, works, acts, busy, setBusy, flash, patchAct, store }} />}
         {tab === "team" && isOrg && <TeamView {...{ user: me, teams, store, works, acts, onOpen: openNode }} />}
@@ -653,8 +653,8 @@ export default function App() {
 
 /* ---------- Login ---------- */
 const LOGIN_HINTS = [
-  { username: "vikram", password: "md@2026", role: "MD · md" },
-  { username: "meera", password: "vp@2026", role: "VP, Supply Chain · vp" },
+  { username: "Abid", password: "md@2026", role: "CEO · ceo" },
+  { username: "rajeev", password: "vp@2026", role: "VP, Supply Chain · vp" },
   { username: "priya", password: "vp@2026", role: "VP, IT · vp" },
   { username: "rohit", password: "team@2026", role: "Executive, IT · member" },
   { username: "neha", password: "team@2026", role: "Executive, SC · member" },
@@ -1433,7 +1433,7 @@ function ActivitiesKanban({ acts, canMove, onMove, onOpen }) {
   const drop = (key) => { const a = acts.find((x) => x.id === dragId); setDragId(null); if (a && canMove(a) && !cols.find((c) => c.key === key).match(a)) onMove(a.id, patchFor(a, key)); };
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      {cols.map((col) => { const items = acts.filter(col.match);
+      {cols.map((col) => { const items = acts.filter(col.match); const idx = cols.indexOf(col);
         return (
           <div key={col.key} onDragOver={(e) => e.preventDefault()} onDrop={() => drop(col.key)} className="rounded-lg border border-slate-200 bg-slate-50 p-2">
             <div className="mb-2 flex items-center gap-1.5 px-1 text-xs font-medium text-slate-500"><span className={`h-2 w-2 rounded-full ${col.cls}`} /> {col.label} <span className="ml-auto rounded-full bg-white px-1.5 text-slate-400">{items.length}</span></div>
@@ -1447,6 +1447,11 @@ function ActivitiesKanban({ acts, canMove, onMove, onOpen }) {
                       <span className={over ? "text-rose-600" : ""}>· {a.date ? fmtFull(parseISO(a.date)) : "no date"}</span>
                       <span>· {a.plannedHrs}h</span>
                     </div>
+                    {/* Touch devices can't drag — arrows move a card between columns. */}
+                    {mine && <div className="mt-2 flex items-center gap-1 border-t border-slate-100 pt-1.5 sm:hidden">
+                      <button onClick={() => idx > 0 && onMove(a.id, patchFor(a, cols[idx - 1].key))} disabled={idx === 0} className="flex flex-1 items-center justify-center gap-0.5 rounded border border-slate-200 py-1 text-[11px] font-medium text-slate-500 hover:bg-slate-50 disabled:opacity-30"><ChevronLeft size={13} /> {idx > 0 ? cols[idx - 1].label : ""}</button>
+                      <button onClick={() => idx < cols.length - 1 && onMove(a.id, patchFor(a, cols[idx + 1].key))} disabled={idx === cols.length - 1} className="flex flex-1 items-center justify-center gap-0.5 rounded border border-slate-200 py-1 text-[11px] font-medium text-slate-500 hover:bg-slate-50 disabled:opacity-30">{idx < cols.length - 1 ? cols[idx + 1].label : ""} <ChevronRight size={13} /></button>
+                    </div>}
                   </div>
                 );
               })}
@@ -1499,8 +1504,12 @@ function AiActionsMenu({ items, busy }) {
 }
 function NodeView({ nodeId, user, works, acts, crs, teams, isOrg, busy, setBusy, flash, patchAct, patchWork, store, onOpen, onRemark, goApprovals }) {
   const node = works.find((w) => w.id === nodeId);
+  const children = node ? works.filter((w) => w.parentId === node.id) : [];
+  const leaf = children.length === 0;
   const [insight, setInsight] = useState(null);
-  const [modify, setModify] = useState(false); const [addUn, setAddUn] = useState(false); const [edit, setEdit] = useState(null); const [confirmDel, setConfirmDel] = useState(null); const [addChild, setAddChild] = useState(false); const [suggest, setSuggest] = useState(null); const [blockerOpen, setBlockerOpen] = useState(false); const [approvalsOpen, setApprovalsOpen] = useState(false); const [childView, setChildView] = useState(() => (typeof window !== "undefined" && window.innerWidth < 768 ? "cards" : "list"));
+  // Leaf work items (which hold activities) open on the Kanban board by default;
+  // containers open on the list (or cards on mobile).
+  const [modify, setModify] = useState(false); const [addUn, setAddUn] = useState(false); const [edit, setEdit] = useState(null); const [confirmDel, setConfirmDel] = useState(null); const [addChild, setAddChild] = useState(false); const [suggest, setSuggest] = useState(null); const [blockerOpen, setBlockerOpen] = useState(false); const [approvalsOpen, setApprovalsOpen] = useState(false); const [childView, setChildView] = useState(() => (leaf ? "kanban" : (typeof window !== "undefined" && window.innerWidth < 768 ? "cards" : "list")));
   if (!node) return <button onClick={() => onOpen(null)} className="text-sm text-slate-500">← Portfolio</button>;
   const childLevel = CHILD_LEVEL[node.level]; const childLabel = childLevel === "activity" ? "task" : (LEVEL_LABEL[childLevel] || "").toLowerCase();
   const team = node.level === "initiative" && node.teamId ? (teams || []).find((t) => t.id === node.teamId) : null;
@@ -1509,8 +1518,6 @@ function NodeView({ nodeId, user, works, acts, crs, teams, isOrg, busy, setBusy,
   const canRemark = isOrg || node.ownerId === user.id;
   const m = computeMeters(works, acts, node.id); const st = workStats(works, acts, node.id);
   const rag = nodeRag(works, acts, node.id); const rg = RAG[rag]; const th = LEVEL_THEME[node.level] || LEVEL_THEME.activity; const att = attentionCount(works, acts, node.id); const issue = deepestIssue(works, acts, node.id);
-  const children = works.filter((w) => w.parentId === node.id);
-  const leaf = children.length === 0;
   const nodeActs = acts.filter((a) => a.workId === node.id);
   const subs = children.length ? children : [node];
   const path = breadcrumbPath(works, user, node.id);
@@ -2163,7 +2170,7 @@ function FollowUps({ me, works, acts, busy, setBusy, flash, onClose, onOpen }) {
 // it's an objective / initiative / work / activity and where it belongs, then a
 // level-appropriate form (pre-filled) captures the rest. Parents can be existing
 // or created new (one level up).
-const ADD_PARENT_LEVEL = { initiative: "objective", work: "initiative", activity: "work" };
+const ADD_PARENT_LEVEL = { initiative: "objective", work: "initiative", activity: "work", deliverable: "work" };
 function SmartAdd({ me, works, teams, store, busy, setBusy, flash, onClose, onCreated }) {
   const [text, setText] = useState(""); const [pdf, setPdf] = useState(null);
   const [analyzed, setAnalyzed] = useState(false);
@@ -2176,9 +2183,10 @@ function SmartAdd({ me, works, teams, store, busy, setBusy, flash, onClose, onCr
   const [deadline, setDeadline] = useState(""); const [dueDate, setDueDate] = useState(""); const [startDate, setStartDate] = useState("");
   const [hrs, setHrs] = useState(2); const [actType, setActType] = useState("self"); const [teamId, setTeamId] = useState("");
   const [metric, setMetric] = useState(""); const [target, setTarget] = useState(100); const [unit, setUnit] = useState("%");
+  const [delivKind, setDelivKind] = useState("document");
 
-  // What each role may create: MD owns objectives; VPs run initiatives down; members add work/tasks.
-  const allowedLevels = me.level === "md" ? ["objective", "initiative", "work", "activity"] : me.level === "vp" ? ["initiative", "work", "activity"] : ["work", "activity"];
+  // What each role may create: MD owns objectives; VPs run initiatives down; members add work/tasks. Anyone can add a deliverable to a work.
+  const allowedLevels = me.level === "md" ? ["objective", "initiative", "work", "activity", "deliverable"] : me.level === "vp" ? ["initiative", "work", "activity", "deliverable"] : ["work", "activity", "deliverable"];
   const parentLevel = ADD_PARENT_LEVEL[level] || null;
   const grandLevel = parentLevel ? ADD_PARENT_LEVEL[parentLevel] || null : null;
   const parentOptions = parentLevel ? works.filter((w) => w.level === parentLevel) : [];
@@ -2231,6 +2239,12 @@ function SmartAdd({ me, works, teams, store, busy, setBusy, flash, onClose, onCr
       store.addActs([{ id: nid("a"), workId: pid, title: title.trim(), description: description || undefined, assigneeId: ownerId || null, startDate: start, date: dueDate || null, status: "planned", plannedHrs: Number(hrs) || 2, actualHrs: null, actType, unplanned: true }]);
       flash("Activity added."); onCreated && onCreated(pid); onClose(); return;
     }
+    if (level === "deliverable") {
+      const item = { id: nid("d"), label: title.trim(), kind: delivKind, done: false, doneAt: null, file: null, score: null, verdict: null, feedback: null };
+      const cur = newParent ? [] : ((works.find((w) => w.id === pid)?.deliverables) || []);
+      store.patchWork(pid, { deliverables: [...cur, item] });
+      flash("Deliverable added to the work’s checklist."); onCreated && onCreated(pid); onClose(); return;
+    }
     const tpl = METRIC_BY_TYPE[type] || METRIC_BY_TYPE.general;
     const node = { id: nid("w"), parentId: level === "objective" ? null : pid, level, title: title.trim(), ownerId: ownerId || me.id, type };
     if (description) node.description = description;
@@ -2241,7 +2255,7 @@ function SmartAdd({ me, works, teams, store, busy, setBusy, flash, onClose, onCr
     flash(`${LEVEL_LABEL[level]} created.`); onCreated && onCreated(node.id); onClose();
   };
 
-  const LEVELS = [["objective", "Objective"], ["initiative", "Initiative"], ["work", "Work"], ["activity", "Task"]].filter(([k]) => allowedLevels.includes(k));
+  const LEVELS = [["objective", "Objective"], ["initiative", "Initiative"], ["work", "Work"], ["activity", "Task"], ["deliverable", "Deliverable"]].filter(([k]) => allowedLevels.includes(k));
   return (
     <Modal onClose={onClose} wide>
       <div className="mb-1 flex items-center justify-between"><h3 className="flex items-center gap-2 text-sm font-medium text-slate-900"><Sparkles size={16} className="text-blue-700" /> Add anything</h3><button onClick={onClose} className="text-slate-400"><X size={18} /></button></div>
@@ -2257,9 +2271,9 @@ function SmartAdd({ me, works, teams, store, busy, setBusy, flash, onClose, onCr
 
       {analyzed && <div className="rounded-lg border border-slate-200 p-3">
         <label className="mb-1.5 block text-xs font-medium text-slate-600">This is a…</label>
-        <div className="mb-3 flex flex-wrap gap-1.5">{LEVELS.map(([k, l]) => { const t = LEVEL_THEME[k]; const on = level === k; return <button key={k} onClick={() => { setLevel(k); setNewParent(false); setParentId(""); }} className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${on ? `${t.chip} border-transparent ring-2 ring-offset-1 ${t.ring}` : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><span className={`h-1.5 w-1.5 rounded-full ${t.bar}`} />{l}</button>; })}</div>
+        <div className="mb-3 flex flex-wrap gap-1.5">{LEVELS.map(([k, l]) => { const t = LEVEL_THEME[k] || LEVEL_THEME.activity; const on = level === k; return <button key={k} onClick={() => { setLevel(k); setNewParent(false); setParentId(""); }} className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${on ? `${t.chip} border-transparent ring-2 ring-offset-1 ${t.ring}` : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><span className={`h-1.5 w-1.5 rounded-full ${t.bar}`} />{l}</button>; })}</div>
 
-        <label className="mb-1 block text-xs font-medium text-slate-600">{level === "activity" ? "Task" : LEVEL_LABEL[level]} name</label>
+        <label className="mb-1 block text-xs font-medium text-slate-600">{level === "activity" ? "Task" : level === "deliverable" ? "Deliverable" : LEVEL_LABEL[level]} name</label>
         <input value={title} onChange={(e) => setTitle(e.target.value)} className={`${inputCls} mb-3`} placeholder="Name it…" />
 
         {parentLevel && <div className="mb-3">
@@ -2273,11 +2287,16 @@ function SmartAdd({ me, works, teams, store, busy, setBusy, flash, onClose, onCr
           </div>}
         </div>}
 
+        {level === "deliverable" && <div className="mb-3">
+          <label className="mb-1 block text-xs font-medium text-slate-600">Kind</label>
+          <div className="flex flex-wrap gap-1.5">{DELIV_ORDER.map((k) => { const K = DELIV_KIND[k]; return <button key={k} type="button" onClick={() => setDelivKind(k)} className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs ${delivKind === k ? "border-blue-300 bg-blue-50 text-blue-800" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><K.Icon size={12} /> {K.label}</button>; })}</div>
+        </div>}
+
         <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {level !== "activity" && <div><label className="mb-1 block text-xs font-medium text-slate-600">Type</label><select value={type} onChange={(e) => setType(e.target.value)} className={inputCls}>{Object.keys(METRIC_BY_TYPE).map((t) => <option key={t} value={t}>{t}</option>)}</select></div>}
-          <div><label className="mb-1 block text-xs font-medium text-slate-600">{level === "activity" ? "Assignee" : "Owner"}</label><select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className={inputCls}><option value="">Unassigned</option>{USERS.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</select></div>
+          {level !== "activity" && level !== "deliverable" && <div><label className="mb-1 block text-xs font-medium text-slate-600">Type</label><select value={type} onChange={(e) => setType(e.target.value)} className={inputCls}>{Object.keys(METRIC_BY_TYPE).map((t) => <option key={t} value={t}>{t}</option>)}</select></div>}
+          {level !== "deliverable" && <div><label className="mb-1 block text-xs font-medium text-slate-600">{level === "activity" ? "Assignee" : "Owner"}</label><select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className={inputCls}><option value="">Unassigned</option>{USERS.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</select></div>}
           {level === "initiative" && <div><label className="mb-1 block text-xs font-medium text-slate-600">Team</label><select value={teamId} onChange={(e) => setTeamId(e.target.value)} className={inputCls}><option value="">No team</option>{(teams || []).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select></div>}
-          {level !== "activity" && <div><label className="mb-1 block text-xs font-medium text-slate-600">Deadline</label><input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} className={inputCls} /></div>}
+          {level !== "activity" && level !== "deliverable" && <div><label className="mb-1 block text-xs font-medium text-slate-600">Deadline</label><input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} className={inputCls} /></div>}
         </div>
 
         {level === "activity" && <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -2294,7 +2313,7 @@ function SmartAdd({ me, works, teams, store, busy, setBusy, flash, onClose, onCr
 
         {level === "activity" && <div className="mb-3"><label className="mb-1 block text-xs font-medium text-slate-600">Description (what to produce)</label><textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} className={inputCls} placeholder="Optional — used when the AI scores the deliverable." /></div>}
 
-        <button onClick={create} disabled={!canCreate} className={`${btnDark} w-full`}><span className={`h-2 w-2 rounded-full ${th.bar}`} /> Create {level === "activity" ? "task" : LEVEL_LABEL[level].toLowerCase()}</button>
+        <button onClick={create} disabled={!canCreate} className={`${btnDark} w-full`}><span className={`h-2 w-2 rounded-full ${th.bar}`} /> Create {level === "activity" ? "task" : level === "deliverable" ? "deliverable" : LEVEL_LABEL[level].toLowerCase()}</button>
       </div>}
     </Modal>
   );
@@ -2356,7 +2375,7 @@ function QuickCreate({ me, parent, level, works, store, busy, setBusy, flash, on
       </div>}
 
       {isObj && <div className="mb-3">
-        <label className="mb-1 flex items-center gap-2 text-xs font-medium text-slate-600"><input type="checkbox" checked={hasMetric} onChange={(e) => setHasMetric(e.target.checked)} /> North-star metric</label>
+        {/* <label className="mb-1 flex items-center gap-2 text-xs font-medium text-slate-600"><input type="checkbox" checked={hasMetric} onChange={(e) => setHasMetric(e.target.checked)} /> North-star metric</label> */}
         {hasMetric && <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-3"><div><label className="mb-1 block text-slate-500">Metric</label><input value={metric} onChange={(e) => setMetric(e.target.value)} className={inputCls} placeholder="Cost / tonne" /></div><div><label className="mb-1 block text-slate-500">Target</label><input type="number" value={target} onChange={(e) => setTarget(e.target.value)} className={inputCls} /></div><div><label className="mb-1 block text-slate-500">Unit</label><input value={unit} onChange={(e) => setUnit(e.target.value)} className={inputCls} /></div></div>}
       </div>}
 

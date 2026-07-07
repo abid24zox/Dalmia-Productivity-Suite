@@ -73,6 +73,26 @@ export function capacityCard(rows: any[]) {
   return card([title('Team capacity', 'Open (not-yet-done) work per person'), { type: 'FactSet', facts: rows.map((r) => ({ title: `${r.name} · ${r.fn}`, value: `${r.openHours}h` })) }]);
 }
 
+export function memberStatusCard(r: any) {
+  const u = r.user, a = r.activities, d = r.deliverables;
+  const facts = [
+    { title: 'Role', value: `${u.title} · ${u.fn}` },
+    { title: 'Execution', value: `${a.execPct}% · ${a.done}/${a.total} activities done` },
+    { title: 'Needs attention', value: `${a.overdue} overdue · ${a.blocked} blocked` },
+    { title: 'Deliverables', value: d.total ? `${d.delivered}/${d.total}${d.avgScore != null ? ` · avg ${d.avgScore}/100` : ''}` : '—' },
+  ];
+  const owned = (r.owned || []).map((w: any) => ({
+    type: 'TextBlock', size: 'Small', wrap: true, color: ragColor(w.rag),
+    text: `• ${w.title} — ${w.level}${w.resultPct != null ? ` · ${w.resultPct}% result` : ''} · P ${w.planning}% / E ${w.execution}%`,
+  }));
+  return card([
+    title(u.name, `${u.title} · ${u.fn}`),
+    { type: 'FactSet', facts },
+    ...(owned.length ? [{ type: 'TextBlock', text: 'Owns', weight: 'Bolder', spacing: 'Medium', wrap: true }, ...owned]
+                     : [{ type: 'TextBlock', text: 'Owns no initiatives or works directly.', isSubtle: true, wrap: true, spacing: 'Small' }]),
+  ], [{ type: 'Action.OpenUrl', title: 'Open portal', url: PORTAL }]);
+}
+
 export function approvalsCard(pending: any[]) {
   if (!pending.length) return card([title('Approvals'), { type: 'TextBlock', text: 'No pending approvals in your scope.', wrap: true }]);
   const body: any[] = [title('Pending approvals', `${pending.length}`)];

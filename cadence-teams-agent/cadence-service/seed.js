@@ -17,8 +17,8 @@ const D = (n) => iso(addDays(TODAY, n));
 // Portal login credentials live here now (server-side). Members without a
 // username/password can still be assigned work; they just don't sign in.
 const USERS = [
-  { id: 'u_vik', username: 'vikram', password: 'md@2026', email: 'vikram@contoso.com', name: 'Vikram Rao', title: 'MD', level: 'md', fn: 'Office of MD', reports_to: null },
-  { id: 'u_mee', username: 'meera', password: 'vp@2026', email: 'meera@contoso.com', name: 'Meera Iyer', title: 'VP, Supply Chain', level: 'vp', fn: 'Supply Chain', reports_to: 'u_vik' },
+  { id: 'u_vik', username: 'Abid', password: 'md@2026', email: 'mohm.abid@zoxima.com', name: 'Mohd Abid', title: 'CEO', level: 'md', fn: 'Office of CEO', reports_to: null },
+  { id: 'u_mee', username: 'rajeev', password: 'vp@2026', email: 'rajeev.sood@zoxima.com', name: 'Rajeev Sood', title: 'VP, Supply Chain', level: 'vp', fn: 'Supply Chain', reports_to: 'u_vik' },
   { id: 'u_pri', username: 'priya', password: 'vp@2026', email: 'priya@contoso.com', name: 'Priya Nair', title: 'VP, IT', level: 'vp', fn: 'IT', reports_to: 'u_vik' },
   { id: 'u_kar', username: 'karan', password: 'vp@2026', email: 'karan@contoso.com', name: 'Karan Malhotra', title: 'VP, Commercial', level: 'vp', fn: 'Commercial', reports_to: 'u_vik' },
   { id: 'u_roh', username: 'rohit', password: 'team@2026', email: 'rohit@contoso.com', name: 'Rohit Sharma', title: 'Executive, IT', level: 'member', fn: 'IT', reports_to: 'u_pri' },

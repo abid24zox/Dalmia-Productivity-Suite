@@ -151,6 +151,35 @@ function getApprovals(userId) {
   return { pending };
 }
 
+// One person's performance scorecard, permission-checked against the caller:
+// the CEO (level md) sees anyone; a VP sees their function or direct reports; a
+// member sees only themselves.
+function getMemberStatus(callerId, query) {
+  const caller = user(callerId) || user('u_vik');
+  const target = resolveUser(query);
+  if (!target) return { error: `No person matches "${query}".` };
+  if (caller.level !== 'md') {
+    const allowed = target.id === caller.id || (caller.level === 'vp' && (target.fn === caller.fn || target.reports_to === caller.id));
+    if (!allowed) return { error: caller.level === 'vp' ? `You can only see people in your function (${caller.fn}).` : 'You can only see your own performance.' };
+  }
+  const acts = db.acts.filter((a) => a.assigneeId === target.id && a.status !== 'cancelled');
+  const done = acts.filter((a) => a.status === 'executed').length;
+  const overdue = acts.filter((a) => M.isOverdue(a)).length;
+  const blocked = acts.filter((a) => a.blocked && a.status !== 'executed').length;
+  const owned = db.works.filter((w) => w.ownerId === target.id && (w.level === 'initiative' || w.level === 'work')).map((w) => {
+    const m = M.computeMeters(db.works, db.acts, w.id);
+    return { id: w.id, title: w.title, level: w.level, rag: M.nodeRag(db.works, db.acts, w.id), resultPct: m.resultPct == null ? null : Math.round(m.resultPct), planning: m.planning, execution: m.execution };
+  });
+  const dl = db.works.filter((w) => w.ownerId === target.id).flatMap((w) => w.deliverables || []);
+  const scored = dl.filter((d) => d.done && typeof d.score === 'number');
+  return {
+    user: { id: target.id, name: target.name, title: target.title, fn: target.fn },
+    activities: { total: acts.length, done, overdue, blocked, execPct: acts.length ? Math.round((done / acts.length) * 100) : 0 },
+    owned,
+    deliverables: { total: dl.length, delivered: dl.filter((d) => d.done).length, avgScore: scored.length ? Math.round(scored.reduce((s, d) => s + d.score, 0) / scored.length) : null },
+  };
+}
+
 /* ---------- resolvers (name -> entity) ---------- */
 const norm = (s) => (s || '').toLowerCase().trim();
 const STOP = new Set(['the', 'a', 'an', 'to', 'of', 'for', 'and', 'in', 'on', 'our', 'my', 'this', 'that', 'all', 'status']);
@@ -316,7 +345,7 @@ module.exports = {
   db, nid, user, uName, team, METRIC_BY_TYPE,
   login, snapshot,
   summarizeInitiative, detailInitiative,
-  getPortfolio, getAttention, getCapacity, getApprovals,
+  getPortfolio, getAttention, getCapacity, getApprovals, getMemberStatus,
   resolveUser, resolveTeam, resolveInitiative, resolveActivity, resolveWork,
   addWorks, patchWork, deleteWork, addActs, patchAct, deleteAct, addCr, patchCr, addTeam, patchTeam, addRemark, markRemarksRead,
   createInitiative, scheduleActivity, reassignActivity, decideApproval, createTeam,

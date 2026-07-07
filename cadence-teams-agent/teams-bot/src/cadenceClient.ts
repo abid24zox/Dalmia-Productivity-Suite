@@ -30,6 +30,7 @@ export const cadence = {
   attention: (userId: string) => call(`/api/attention?userId=${encodeURIComponent(userId)}`),
   capacity: (userId: string) => call(`/api/capacity?userId=${encodeURIComponent(userId)}`),
   approvals: (userId: string) => call(`/api/approvals?userId=${encodeURIComponent(userId)}`),
+  memberStatus: (userId: string, q: string) => call(`/api/member-status?userId=${encodeURIComponent(userId)}&q=${encodeURIComponent(q)}`),
   decideApproval: (id: string, body: any) => call(`/api/approvals/${id}/decide`, { method: 'POST', body: JSON.stringify(body) }),
   deliverables: (work: string) => call(`/api/deliverables?work=${encodeURIComponent(work)}`),
   attachDeliverable: (workId: string, body: any) => call(`/api/works/${workId}/deliverables/attach`, { method: 'POST', body: JSON.stringify(body) }),

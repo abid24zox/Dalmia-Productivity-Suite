@@ -66,6 +66,7 @@ app.get('/api/portfolio', (req, res) => ok(res, store.getPortfolio(req.query.use
 app.get('/api/attention', (req, res) => ok(res, store.getAttention(req.query.userId)));
 app.get('/api/capacity', (req, res) => ok(res, store.getCapacity(req.query.userId)));
 app.get('/api/approvals', (req, res) => ok(res, store.getApprovals(req.query.userId)));
+app.get('/api/member-status', (req, res) => { const r = store.getMemberStatus(req.query.userId, req.query.q); if (r && r.error) return bad(res, r.error, 400); ok(res, r); });
 
 app.get('/api/resolve', (req, res) => {
   const { kind, q } = req.query;
