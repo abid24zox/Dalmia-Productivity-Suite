@@ -790,21 +790,32 @@ function Leaderboard({ works, acts, teams, me, userFilter }) {
   const stats = perfUsers.map((u) => {
     const mine = acts.filter((a) => a.assigneeId === u.id && a.status !== "cancelled");
     const done = mine.filter((a) => a.status === "executed").length;
+    const overdue = mine.filter((a) => isOverdue(a)).length;
+    const blocked = mine.filter((a) => a.blocked && a.status !== "executed").length;
     const owned = works.filter((w) => w.ownerId === u.id && (w.level === "initiative" || w.level === "work"));
     const planning = owned.length ? Math.round(owned.reduce((s, w) => s + computeMeters(works, acts, w.id).planning, 0) / owned.length) : null;
-    return { id: u.id, name: u.name, done, total: mine.length, execPct: mine.length ? Math.round((done / mine.length) * 100) : 0, planning, owns: owned.length };
+    return { id: u.id, name: u.name, done, total: mine.length, execPct: mine.length ? Math.round((done / mine.length) * 100) : 0, planning, owns: owned.length, overdue, blocked };
   });
   let teamScope = me.level === "md" ? (teams || []) : (teams || []).filter((t) => t.memberIds.some((id) => fnOf(id) === me.fn));
   if (userFilter) teamScope = teamScope.filter((t) => t.memberIds.some((id) => userFilter.has(id)));
   const teamStats = teamScope.map((t) => { const ta = acts.filter((a) => t.memberIds.includes(a.assigneeId) && a.status !== "cancelled"); const done = ta.filter((a) => a.status === "executed").length; return { id: t.id, name: t.name, done, total: ta.length, execPct: ta.length ? Math.round((done / ta.length) * 100) : 0 }; });
   const CATS = {
     finishers: { label: "Top finishers", rows: () => stats.filter((s) => s.total > 0).sort((a, b) => (b.done * b.execPct) - (a.done * a.execPct) || b.done - a.done).map((s) => ({ id: s.id, kind: "user", name: s.name, pct: s.execPct, text: `${s.done} done · ${s.execPct}%` })) },
+    needsAttention: { label: "Needs attention", tone: "attn", rows: () => stats.filter((s) => s.total > 0 && (s.overdue > 0 || s.blocked > 0 || s.execPct < 100)).sort((a, b) => ((b.overdue + b.blocked) - (a.overdue + a.blocked)) || (a.execPct - b.execPct) || ((b.total - b.done) - (a.total - a.done))).map((s) => ({ id: s.id, kind: "user", name: s.name, pct: 100 - s.execPct, text: (s.overdue || s.blocked) ? `${s.overdue} overdue${s.blocked ? ` · ${s.blocked} blocked` : ""}` : `${s.execPct}% done · ${s.total - s.done} open` })) },
     planners: { label: "Top planners", rows: () => stats.filter((s) => s.planning != null).sort((a, b) => b.planning - a.planning).map((s) => ({ id: s.id, kind: "user", name: s.name, pct: s.planning, text: `${s.planning}% planned · ${s.owns} owned` })) },
+    underplanned: { label: "Under-planned", tone: "attn", rows: () => stats.filter((s) => s.planning != null).sort((a, b) => a.planning - b.planning).map((s) => ({ id: s.id, kind: "user", name: s.name, pct: 100 - s.planning, text: `${s.planning}% planned · ${s.owns} owned` })) },
     teams: { label: "Best teams", rows: () => teamStats.slice().sort((a, b) => b.execPct - a.execPct).map((s) => ({ id: s.id, kind: "team", name: s.name, pct: s.execPct, text: `${s.execPct}% done · ${s.done}/${s.total}` })) },
+    teamsRisk: { label: "Teams at risk", tone: "attn", rows: () => teamStats.filter((s) => s.total > 0).slice().sort((a, b) => a.execPct - b.execPct).map((s) => ({ id: s.id, kind: "team", name: s.name, pct: 100 - s.execPct, text: `${s.execPct}% done · ${s.done}/${s.total}` })) },
   };
+  const attn = CATS[cat].tone === "attn";
   const rows = CATS[cat].rows().slice(0, 5);
-  // Gold / silver / bronze podium styling for the top three; plain for the rest.
-  const PODIUM = [
+  // Ranked emphasis for the top three: a gold-podium for the "top" lists, a
+  // rose "concern" scale for the needs-attention lists; plain for the rest.
+  const PODIUM = attn ? [
+    { row: "border-rose-300 bg-rose-50", badge: "bg-rose-500 text-white" },
+    { row: "border-rose-200 bg-rose-50", badge: "bg-rose-400 text-white" },
+    { row: "border-amber-200 bg-amber-50", badge: "bg-amber-500 text-white" },
+  ] : [
     { row: "border-amber-200 bg-amber-50", badge: "bg-amber-400 text-white" },
     { row: "border-slate-300 bg-slate-100", badge: "bg-slate-400 text-white" },
     { row: "border-orange-200 bg-orange-50", badge: "bg-orange-400 text-white" },
@@ -819,7 +830,7 @@ function Leaderboard({ works, acts, teams, me, userFilter }) {
               <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${p ? p.badge : "bg-slate-100 text-slate-400"}`}>{i + 1}</span>
               {r.kind === "user" ? <Avatar id={r.id} size={24} /> : <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white"><Users size={13} className="text-slate-500" /></span>}
               <div className="min-w-0 flex-1"><div className="truncate text-sm font-medium text-slate-800">{r.name}</div><div className="truncate text-xs text-slate-500">{r.text}</div></div>
-              <div className="hidden w-20 shrink-0 sm:block"><div className="h-1.5 overflow-hidden rounded-full bg-white/70"><div className="h-full rounded-full bg-blue-700" style={{ width: `${Math.max(0, Math.min(100, r.pct))}%` }} /></div></div>
+              <div className="hidden w-20 shrink-0 sm:block"><div className="h-1.5 overflow-hidden rounded-full bg-white/70"><div className={`h-full rounded-full ${attn ? "bg-rose-500" : "bg-blue-700"}`} style={{ width: `${Math.max(0, Math.min(100, r.pct))}%` }} /></div></div>
             </div>
           );
         })}
