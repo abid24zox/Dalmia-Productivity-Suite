@@ -14,6 +14,12 @@ on:
       - deploy/single-appservice
   workflow_dispatch:
 
+# Only one deploy to this app at a time — a newer run cancels an in-flight one,
+# so two overlapping runs can't both hit OneDeploy and collide with a 409.
+concurrency:
+  group: deploy-cadence-zoxima
+  cancel-in-progress: true
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
