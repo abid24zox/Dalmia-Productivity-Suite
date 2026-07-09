@@ -53,7 +53,8 @@ How to behave:
 - Everything the user asks about state, use a tool — never invent numbers. ${scopeNote}
 - When the user wants to plan something new: YOU decompose it into 3-6 works (phases), each with 1-4 concrete activities (title, estimateHrs, type = self/meeting/call/site). Briefly show the proposed plan and the target team, ask for a yes, THEN call plan_initiative. The service assigns activities across the team by load and dates them to the deadline.
 - Before assigning people, you may check team_capacity so you don't overload someone.
-- Each Work carries a DELIVERABLES checklist — the concrete outputs it must produce (documents, spreadsheets, emails, decks). Use list_deliverables to show it. When the user ATTACHES a file, offer to log it against a deliverable with log_deliverable (it marks the item delivered and AI-scores the file). When a work's outputs are in, complete_work marks it and its activities done.
+- The cards are INTERACTIVE and drill down. For anything at the OBJECTIVE level ("which objectives are overdue", "objective report", "how are the objectives") use get_objectives; get_objective opens one objective; get_work opens one work. Each card's rows are tappable to drill in, so you rarely need to fetch children yourself — return the right top card and let the user drill.
+- Each Work carries a DELIVERABLES checklist. get_work shows it with tick-boxes; the user can mark items done, auto-assign, suggest deliverables, or mark complete right on the card. When the user ATTACHES a file, log it against a deliverable with log_deliverable (it marks the item delivered and AI-scores the file). When a work's outputs are in, complete_work marks it and its activities done.
 - Keep replies short and executive. A card usually accompanies your answer, so don't repeat every number in prose — give the headline and the recommendation.
 - If a tool returns an error asking which team/person/initiative, ask the user that one question.
 - Today's date is ${new Date().toISOString().slice(0, 10)}.`;
@@ -119,20 +120,61 @@ export class CadenceBot extends TeamsActivityHandler {
     });
   }
 
+  // Refresh the SAME card message in place (updateActivity) so drilling and
+  // ticking deliverables never spawns a new message. Falls back to a new
+  // message if Teams didn't give us the id to edit.
+  private async refresh(context: TurnContext, cardJson: any) {
+    const activity: any = MessageFactory.attachment(CardFactory.adaptiveCard(cardJson));
+    const id = context.activity.replyToId;
+    if (id) { activity.id = id; await context.updateActivity(activity); }
+    else await context.sendActivity(activity);
+  }
+
+  private async buildCard(kind: string, id: string) {
+    if (kind === 'objective') return cards.objectiveCard(await cadence.objective(id));
+    if (kind === 'initiative') return cards.initiativeCard(await cadence.initiative(id));
+    return cards.workCard(await cadence.workDetail(id));
+  }
+
   private async handleCardAction(context: TurnContext, value: any) {
-    if (value.action === 'decide_approval') {
-      const userId = await getCadenceUserId(context);
-      const remark = value[`remark_${value.id}`] || value.remark || '';
-      const spinoff = String(value[`spinoff_${value.id}`]) === 'true';
-      try {
-        const res = await cadence.decideApproval(value.id, { approve: !!value.approve, remark, spinoff, approverId: userId });
-        const msg = res.cr.status === 'approved'
-          ? `Approved.${res.spun ? ` Follow-up initiative created: “${res.spun.title}”.` : ''}`
-          : 'Rejected.';
-        await context.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(cards.textCard('Decision recorded', msg))));
-      } catch (e: any) {
-        await context.sendActivity(`Couldn't record that decision: ${e.message || e}`);
+    try {
+      switch (value.action) {
+        case 'decide_approval': {
+          const userId = await getCadenceUserId(context);
+          const remark = value[`remark_${value.id}`] || value.remark || '';
+          const spinoff = String(value[`spinoff_${value.id}`]) === 'true';
+          const res = await cadence.decideApproval(value.id, { approve: !!value.approve, remark, spinoff, approverId: userId });
+          const msg = res.cr.status === 'approved' ? `Approved.${res.spun ? ` Follow-up initiative created: “${res.spun.title}”.` : ''}` : 'Rejected.';
+          await context.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(cards.textCard('Decision recorded', msg))));
+          return;
+        }
+        // drill up/down — re-render this card as the target level
+        case 'drill':
+          return this.refresh(context, await this.buildCard(value.kind, value.id));
+        // tick / untick a deliverable in place
+        case 'deliv_toggle': {
+          const r = await cadence.toggleDeliverable(value.workId, value.did);
+          return this.refresh(context, cards.workCard(r.work));
+        }
+        case 'auto_assign': {
+          const r = await cadence.autoAssignWork(value.workId);
+          return this.refresh(context, cards.workCard(r.work));
+        }
+        case 'suggest_deliv': {
+          const r = await cadence.suggestDeliverables(value.workId);
+          return this.refresh(context, cards.workCard(r.work));
+        }
+        case 'work_complete': {
+          const w = await cadence.workDetail(value.workId);
+          return this.refresh(context, cards.confirmCompleteCard(w));
+        }
+        case 'work_complete_go': {
+          await cadence.completeWork(value.workId);
+          return this.refresh(context, cards.workCard(await cadence.workDetail(value.workId)));
+        }
       }
+    } catch (e: any) {
+      await context.sendActivity(`Couldn't do that: ${e.message || e}`);
     }
   }
 }

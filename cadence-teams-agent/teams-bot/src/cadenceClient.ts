@@ -35,7 +35,14 @@ export const cadence = {
   deliverables: (work: string) => call(`/api/deliverables?work=${encodeURIComponent(work)}`),
   attachDeliverable: (workId: string, body: any) => call(`/api/works/${workId}/deliverables/attach`, { method: 'POST', body: JSON.stringify(body) }),
   completeWork: (workId: string) => call(`/api/works/${workId}/complete`, { method: 'POST', body: '{}' }),
-  resolve: (kind: 'user' | 'team' | 'initiative' | 'activity' | 'work', q: string) =>
+  // level-aware detail + interactive actions
+  objectives: (userId: string) => call(`/api/objectives?userId=${encodeURIComponent(userId)}`),
+  objective: (id: string) => call(`/api/objectives/${encodeURIComponent(id)}`),
+  workDetail: (id: string) => call(`/api/works/${encodeURIComponent(id)}/detail`),
+  toggleDeliverable: (workId: string, did: string) => call(`/api/works/${workId}/deliverables/${did}/toggle`, { method: 'POST', body: '{}' }),
+  autoAssignWork: (workId: string) => call(`/api/works/${workId}/auto-assign`, { method: 'POST', body: '{}' }),
+  suggestDeliverables: (workId: string) => call(`/api/works/${workId}/deliverables/suggest`, { method: 'POST', body: '{}' }),
+  resolve: (kind: 'user' | 'team' | 'initiative' | 'activity' | 'work' | 'objective', q: string) =>
     call(`/api/resolve?kind=${kind}&q=${encodeURIComponent(q)}`).then((r) => r.match as { id: string; name: string } | null),
 };
 
@@ -44,3 +51,4 @@ export async function needTeam(q: string) { const m = await cadence.resolve('tea
 export async function needUser(q: string) { const m = await cadence.resolve('user', q); if (!m) throw new Error(`No person matches "${q}".`); return m; }
 export async function needActivity(q: string) { const m = await cadence.resolve('activity', q); if (!m) throw new Error(`No activity matches "${q}".`); return m; }
 export async function needWork(q: string) { const m = await cadence.resolve('work', q); if (!m) throw new Error(`No work matches "${q}". Ask the user which work package.`); return m; }
+export async function needObjective(q: string) { const m = await cadence.resolve('objective', q); if (!m) throw new Error(`No objective matches "${q}".`); return m; }

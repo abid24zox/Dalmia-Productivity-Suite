@@ -341,13 +341,90 @@ function completeWork(workId) {
   return { work: w, activitiesCompleted: completed, totalActivities: acts.length };
 }
 
+// Tick / untick one deliverable (no file, no score) — the in-chat checkbox.
+function toggleDeliverable(workId, did) {
+  const w = getWork(workId); if (!w) return null;
+  const d = (w.deliverables || []).find((x) => x.id === did); if (!d) return null;
+  d.done = !d.done; d.doneAt = d.done ? seed.iso(seed.TODAY) : null;
+  if (w.completedAt && (w.deliverables || []).some((x) => !x.done)) w.completedAt = null; // reopened
+  return w;
+}
+
+// Append AI-proposed (or given) deliverables to a work, skipping duplicates.
+function addWorkDeliverables(workId, items) {
+  const w = getWork(workId); if (!w) return null;
+  w.deliverables = w.deliverables || [];
+  const have = new Set(w.deliverables.map((d) => normLabel(d.label)));
+  const add = (items || []).filter((it) => it.label && !have.has(normLabel(it.label)))
+    .map((it) => ({ id: nid('d'), label: it.label, kind: it.kind || 'other', done: false, doneAt: null, file: null, score: null, verdict: null, feedback: null }));
+  w.deliverables.push(...add);
+  return { work: w, added: add.length };
+}
+
+// Auto-assign a work's unassigned activities to members, balanced by open load.
+function autoAssignWork(workId) {
+  const w = getWork(workId); if (!w) return { work: null, assigned: 0 };
+  const un = db.acts.filter((a) => a.workId === workId && !a.assigneeId && a.status !== 'cancelled');
+  if (!un.length) return { work: w, assigned: 0 };
+  const members = db.users.filter((u) => u.level === 'member');
+  const load = {}; members.forEach((u) => (load[u.id] = M.loadOf(db.acts, u.id)));
+  let i = 0;
+  un.forEach((a) => { members.sort((x, y) => load[x.id] - load[y.id]); const pick = members[0]; load[pick.id] += a.plannedHrs || 2; a.assigneeId = pick.id; if (!a.date) a.date = seed.iso(seed.addDays(seed.TODAY, i % 5)); i++; });
+  return { work: w, assigned: un.length };
+}
+
+/* ---------- level-aware detail shapes (bot cards) ---------- */
+function resolveObjective(q) { const n = norm(q); const os = db.works.filter((w) => w.level === 'objective'); return os.find((w) => norm(w.title) === n) || os.find((w) => norm(w.title).includes(n)) || db.works.find((w) => w.id === q) || bestTokenMatch(os, q, (w) => w.title); }
+
+function detailObjective(idOrObj) {
+  const o = typeof idOrObj === 'string' ? resolveObjective(idOrObj) : idOrObj;
+  if (!o) return null;
+  const st = M.workStats(db.works, db.acts, o.id);
+  const inis = db.works.filter((w) => w.parentId === o.id && w.level === 'initiative').map(summarizeInitiative);
+  const attain = inis.filter((i) => i.resultPct != null);
+  return {
+    id: o.id, title: o.title, ownerName: uName(o.ownerId), deadline: o.deadline || null,
+    rag: M.nodeRag(db.works, db.acts, o.id),
+    avgResult: attain.length ? Math.round(attain.reduce((s, i) => s + i.resultPct, 0) / attain.length) : null,
+    initiativesCount: inis.length, overdue: st.overdue, done: st.done, total: st.total,
+    initiatives: inis.map((i) => ({ id: i.id, title: i.title, ownerName: i.ownerName, fn: i.fn, rag: i.rag, resultPct: i.resultPct, execution: i.execution, overdue: i.stats.overdue })),
+  };
+}
+
+// Objective-level report for the caller (used by "which objectives…", "objective report").
+function getObjectives(userId) {
+  const u = user(userId) || user('u_vik');
+  let objs = db.works.filter((w) => w.level === 'objective');
+  if (u.level !== 'md') { const parentIds = new Set(M.scopeInitiatives(db.works, db.acts, u).map((i) => i.parentId)); objs = objs.filter((o) => parentIds.has(o.id) || o.ownerId === u.id); }
+  const list = objs.map((o) => { const d = detailObjective(o); return { id: o.id, title: o.title, rag: d.rag, avgResult: d.avgResult, initiativesCount: d.initiativesCount, overdue: d.overdue }; });
+  return { scope: u.level === 'md' ? 'Enterprise' : `Function — ${u.fn}`, onTrack: list.filter((o) => o.rag === 'green').length, atRisk: list.filter((o) => o.rag !== 'green').length, overdue: list.filter((o) => o.overdue > 0).length, objectives: list };
+}
+
+function detailWork(idOrWork) {
+  const w = typeof idOrWork === 'string' ? resolveWork(idOrWork) : idOrWork;
+  if (!w) return null;
+  const m = M.computeMeters(db.works, db.acts, w.id);
+  const acts = db.acts.filter((a) => a.workId === w.id && a.status !== 'cancelled').map((a) => ({ id: a.id, title: a.title, assigneeName: a.assigneeId ? uName(a.assigneeId) : null, date: a.date, status: a.status, overdue: M.isOverdue(a), blocked: !!a.blocked }));
+  const dl = w.deliverables || []; const sc = dl.filter((d) => d.done && typeof d.score === 'number');
+  const parent = db.works.find((x) => x.id === w.parentId);
+  return {
+    id: w.id, title: w.title, ownerName: uName(w.ownerId), deadline: w.deadline || null,
+    parentId: w.parentId, parentTitle: parent ? parent.title : null,
+    rag: M.nodeRag(db.works, db.acts, w.id), planning: m.planning, execution: m.execution, completedAt: w.completedAt || null,
+    doneActs: acts.filter((a) => a.status === 'executed').length, totalActs: acts.length, overdue: acts.filter((a) => a.overdue).length,
+    activities: acts,
+    deliverables: { items: dl.map((d) => ({ id: d.id, label: d.label, kind: d.kind, done: !!d.done, score: typeof d.score === 'number' ? d.score : null, file: d.file ? d.file.name : null, verdict: d.verdict || null })), done: dl.filter((d) => d.done).length, total: dl.length, avgScore: sc.length ? Math.round(sc.reduce((s, d) => s + d.score, 0) / sc.length) : null },
+  };
+}
+
 module.exports = {
   db, nid, user, uName, team, METRIC_BY_TYPE,
   login, snapshot,
   summarizeInitiative, detailInitiative,
   getPortfolio, getAttention, getCapacity, getApprovals, getMemberStatus,
-  resolveUser, resolveTeam, resolveInitiative, resolveActivity, resolveWork,
+  resolveUser, resolveTeam, resolveInitiative, resolveActivity, resolveWork, resolveObjective,
   addWorks, patchWork, deleteWork, addActs, patchAct, deleteAct, addCr, patchCr, addTeam, patchTeam, addRemark, markRemarksRead,
   createInitiative, scheduleActivity, reassignActivity, decideApproval, createTeam,
-  getWork, workDeliverables, attachDeliverable, completeWork,
+  getWork, workDeliverables, attachDeliverable, completeWork, toggleDeliverable, addWorkDeliverables, autoAssignWork,
+  detailObjective, getObjectives, detailWork,
 };

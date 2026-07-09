@@ -68,6 +68,21 @@ app.get('/api/capacity', (req, res) => ok(res, store.getCapacity(req.query.userI
 app.get('/api/approvals', (req, res) => ok(res, store.getApprovals(req.query.userId)));
 app.get('/api/member-status', (req, res) => { const r = store.getMemberStatus(req.query.userId, req.query.q); if (r && r.error) return bad(res, r.error, 400); ok(res, r); });
 
+/* ---------- level-aware detail + interactive card actions (bot) ---------- */
+app.get('/api/objectives', (req, res) => ok(res, store.getObjectives(req.query.userId)));
+app.get('/api/objectives/:id', (req, res) => { const d = store.detailObjective(req.params.id); if (!d) return bad(res, 'objective not found', 404); ok(res, d); });
+app.get('/api/works/:id/detail', (req, res) => { const d = store.detailWork(req.params.id); if (!d) return bad(res, 'work not found', 404); ok(res, d); });
+app.post('/api/works/:id/deliverables/:did/toggle', (req, res) => { const w = store.toggleDeliverable(req.params.id, req.params.did); if (!w) return bad(res, 'not found', 404); withSnap(res, { work: store.detailWork(w.id) }); });
+app.post('/api/works/:id/auto-assign', (req, res) => { const r = store.autoAssignWork(req.params.id); if (!r.work) return bad(res, 'work not found', 404); withSnap(res, { assigned: r.assigned, work: store.detailWork(r.work.id) }); });
+app.post('/api/works/:id/deliverables/suggest', async (req, res) => {
+  const w = store.getWork(req.params.id); if (!w) return bad(res, 'work not found', 404);
+  const acts = store.db.acts.filter((a) => a.workId === w.id).map((a) => a.title);
+  let items = [];
+  try { const out = await ai.suggestDeliverables(w.title, acts); items = out.deliverables || []; } catch (e) { return aiErr(res, e); }
+  const r = store.addWorkDeliverables(w.id, items);
+  withSnap(res, { added: r.added, work: store.detailWork(w.id) });
+});
+
 app.get('/api/resolve', (req, res) => {
   const { kind, q } = req.query;
   let e = null;
@@ -76,6 +91,7 @@ app.get('/api/resolve', (req, res) => {
   else if (kind === 'initiative') e = store.resolveInitiative(q);
   else if (kind === 'activity') e = store.resolveActivity(q);
   else if (kind === 'work') e = store.resolveWork(q);
+  else if (kind === 'objective') e = store.resolveObjective(q);
   ok(res, { match: e ? { id: e.id, name: e.name || e.title } : null });
 });
 

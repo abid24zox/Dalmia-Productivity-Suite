@@ -6,7 +6,7 @@
 //   • kpiStrip([...])       — a tinted band of "big number + small label" columns
 //   • sectionHeader(text)   — an accent, separated section divider
 //   • RAG is always colour-coded: green = on track, amber = at risk, red = behind
-const PORTAL = process.env.PORTAL_URL || 'https://cadence-zoxima-productivity-suite-gubndqggbkgfbpda.centralindia-01.azurewebsites.net/#/portfolio';
+const PORTAL = process.env.PORTAL_URL || 'https://cadence-zoxima-productivity-suite-gubndqggbkgfbpda.centralindia-01.azurewebsites.net';
 
 const ragColor = (rag: string) => (rag === 'red' ? 'Attention' : rag === 'amber' ? 'Warning' : 'Good');
 const ragWord = (rag: string) => (rag === 'red' ? 'Behind' : rag === 'amber' ? 'At risk' : 'On track');
@@ -45,6 +45,24 @@ const sectionHeader = (t: string) => ({ type: 'TextBlock', text: t.toUpperCase()
 const runT = (text: string, o: any = {}) => ({ type: 'TextRun', text, ...o });
 const rich = (inlines: any[], spacing = 'Small') => ({ type: 'RichTextBlock', spacing, inlines });
 const note = (text: string) => ({ type: 'TextBlock', text, size: 'Small', isSubtle: true, wrap: true, spacing: 'Small' });
+const levelTag = (t: string) => ({ type: 'TextBlock', text: t.toUpperCase(), size: 'Small', weight: 'Bolder', color: 'Accent', spacing: 'None' });
+
+// A tappable row that drills to the level below (the whole row is a Submit).
+function drillRow(title: string, metaInline: any, data: any, rightText?: string | null, rightColor?: string) {
+  return {
+    type: 'ColumnSet', spacing: 'Small', separator: true, selectAction: { type: 'Action.Submit', data },
+    columns: [
+      { type: 'Column', width: 'stretch', items: [
+        { type: 'TextBlock', text: title, weight: 'Bolder', wrap: true, spacing: 'None' },
+        metaInline,
+      ] },
+      { type: 'Column', width: 'auto', verticalContentAlignment: 'Center', items: [
+        ...(rightText ? [{ type: 'TextBlock', text: rightText, color: rightColor || 'Default', weight: 'Bolder', horizontalAlignment: 'Right', spacing: 'None' }] : []),
+        { type: 'TextBlock', text: '›', color: 'Accent', size: 'Large', weight: 'Bolder', horizontalAlignment: 'Right', spacing: 'None' },
+      ] },
+    ],
+  };
+}
 
 // ---------- portfolio ----------
 export function portfolioCard(p: any) {
@@ -87,6 +105,7 @@ export function portfolioCard(p: any) {
 // ---------- one initiative (detail) ----------
 export function initiativeCard(i: any) {
   const body: any[] = [
+    levelTag('Initiative'),
     header(i.title, `${i.ownerName} · ${i.fn}${i.teamName ? ' · ' + i.teamName : ''}`),
     kpiStrip([
       { label: 'Result', value: i.resultPct == null ? '—' : `${i.resultPct}%`, color: ragColor(i.rag) },
@@ -99,27 +118,132 @@ export function initiativeCard(i: any) {
       { title: 'Timeline', value: `${i.startDate || '?'} → ${i.endDate || i.deadline || '?'}` },
       { title: 'Effort', value: i.effort ? `${i.effort.actual} / ${i.effort.planned} h  (actual / est)` : '—' },
     ] },
-    sectionHeader('Work breakdown'),
+    sectionHeader('Work breakdown — tap to open'),
   ];
   (i.subworks || []).forEach((s: any) => {
     const d = s.deliverables;
-    body.push({
-      type: 'Container', spacing: 'Small', separator: true, items: [
-        { type: 'ColumnSet', columns: [
-          { type: 'Column', width: 'stretch', items: [{ type: 'TextBlock', text: s.title, weight: 'Bolder', wrap: true, spacing: 'None' }] },
-          { type: 'Column', width: 'auto', verticalContentAlignment: 'Center', items: [{ type: 'TextBlock', text: `Exec ${s.execution}%`, isSubtle: true, size: 'Small', horizontalAlignment: 'Right', spacing: 'None' }] },
-        ] },
-        ...(d && d.total ? [note(`Deliverables ${d.done}/${d.total}${d.avgScore != null ? ` · avg ${d.avgScore}/100` : ''}${s.completedAt ? '  ·  ✔ complete' : ''}`)] : []),
-        ...s.activities.map((a: any) => rich([
-          runT(a.overdue || a.blocked ? '●  ' : '○  ', { color: a.overdue ? 'Attention' : a.blocked ? 'Warning' : 'Default' }),
-          runT(a.title),
-          runT(`  —  ${a.assigneeName || 'Unassigned'} · ${a.date || 'no date'} · ${a.status}`, { isSubtle: true }),
-          ...(a.overdue ? [runT('  · overdue', { color: 'Attention' })] : a.blocked ? [runT('  · blocked', { color: 'Warning' })] : []),
-        ], 'None')),
-      ],
-    });
+    const ov = (s.activities || []).filter((a: any) => a.overdue).length;
+    const word = s.completedAt ? 'Complete' : ov ? 'Behind' : 'In progress';
+    const col = s.completedAt ? 'Good' : ov ? 'Attention' : 'Warning';
+    body.push(drillRow(
+      s.title,
+      rich([
+        runT(word, { color: col, weight: 'Bolder' }),
+        runT(`   Exec ${s.execution}%${d && d.total ? ` · deliv ${d.done}/${d.total}` : ''}`, { isSubtle: true }),
+        ...(ov ? [runT(`  ·  ${ov} overdue`, { color: 'Attention' })] : []),
+      ], 'None'),
+      { action: 'drill', kind: 'work', id: s.id },
+    ));
   });
   return card(body, [{ type: 'Action.OpenUrl', title: 'Open in portal', url: PORTAL }]);
+}
+
+// ---------- objectives report (tappable) ----------
+export function objectivesReportCard(r: any) {
+  const body: any[] = [
+    header('Objectives', `${r.scope} · ${plural(r.objectives.length, 'objective')}`),
+    kpiStrip([
+      { label: 'On track', value: `${r.onTrack}`, color: 'Good' },
+      { label: 'To watch', value: `${r.atRisk}`, color: r.atRisk ? 'Attention' : 'Default' },
+      { label: 'Overdue', value: `${r.overdue}`, color: r.overdue ? 'Attention' : 'Default' },
+    ]),
+    sectionHeader('Objectives — tap to open'),
+  ];
+  r.objectives.forEach((o: any) => body.push(drillRow(
+    o.title,
+    rich([
+      runT(ragWord(o.rag), { color: ragColor(o.rag), weight: 'Bolder' }),
+      runT(`   ${o.initiativesCount} initiatives${o.avgResult != null ? ` · avg ${o.avgResult}%` : ''}`, { isSubtle: true }),
+      ...(o.overdue ? [runT(`  ·  ${o.overdue} overdue`, { color: 'Attention' })] : []),
+    ], 'None'),
+    { action: 'drill', kind: 'objective', id: o.id },
+  )));
+  return card(body, [{ type: 'Action.OpenUrl', title: 'Open portal', url: PORTAL }]);
+}
+
+// ---------- one objective (detail) ----------
+export function objectiveCard(o: any) {
+  const body: any[] = [
+    levelTag('Objective'),
+    header(o.title, o.ownerName),
+    kpiStrip([
+      { label: 'Status', value: ragWord(o.rag), color: ragColor(o.rag) },
+      { label: 'Avg result', value: o.avgResult == null ? '—' : `${o.avgResult}%` },
+      { label: 'Overdue', value: `${o.overdue}`, color: o.overdue ? 'Attention' : 'Default' },
+    ]),
+    sectionHeader(`Initiatives · ${o.initiativesCount} — tap to open`),
+  ];
+  (o.initiatives || []).forEach((i: any) => body.push(drillRow(
+    i.title,
+    rich([
+      runT(ragWord(i.rag), { color: ragColor(i.rag), weight: 'Bolder' }),
+      runT(`   ${i.ownerName} · Exec ${i.execution}%`, { isSubtle: true }),
+      ...(i.overdue ? [runT(`  ·  ${i.overdue} overdue`, { color: 'Attention' })] : []),
+    ], 'None'),
+    { action: 'drill', kind: 'initiative', id: i.id },
+    i.resultPct == null ? null : `${i.resultPct}%`, ragColor(i.rag),
+  )));
+  return card(body, [{ type: 'Action.OpenUrl', title: 'Open in portal', url: PORTAL }]);
+}
+
+// ---------- one work (detail) — activities + interactive deliverables ----------
+export function workCard(w: any) {
+  const dn = w.deliverables.done, tt = w.deliverables.total, done = !!w.completedAt;
+  const word = done ? 'Complete' : w.rag === 'red' ? 'Behind' : w.rag === 'amber' ? 'At risk' : 'On track';
+  const body: any[] = [
+    levelTag('Work'),
+    header(w.title, `${w.ownerName}${w.parentTitle ? ' · ' + w.parentTitle : ''}`),
+    kpiStrip([
+      { label: 'Planned', value: `${w.planning}%` },
+      { label: 'Done', value: `${w.execution}%`, color: done ? 'Good' : w.execution ? 'Default' : 'Warning' },
+      { label: 'Overdue', value: `${w.overdue}`, color: w.overdue ? 'Attention' : 'Default' },
+    ]),
+    rich([runT(word, { color: done ? 'Good' : ragColor(w.rag), weight: 'Bolder' }), runT(`   ${w.doneActs}/${w.totalActs} activities done`, { isSubtle: true })], 'Small'),
+    sectionHeader(`Activities · ${w.totalActs}`),
+  ];
+  w.activities.forEach((a: any) => body.push(rich([
+    runT(a.overdue || a.blocked ? '●  ' : '○  ', { color: a.overdue ? 'Attention' : a.blocked ? 'Warning' : 'Default' }),
+    runT(a.title),
+    runT(`  —  ${a.assigneeName || 'Unassigned'} · ${a.date || 'no date'} · ${a.status}`, { isSubtle: true }),
+    ...(a.overdue ? [runT('  · overdue', { color: 'Attention' })] : a.blocked ? [runT('  · blocked', { color: 'Warning' })] : []),
+  ], 'Small')));
+  body.push(sectionHeader(`Deliverables · ${dn}/${tt} delivered${w.deliverables.avgScore != null ? ` · avg ${w.deliverables.avgScore}` : ''}  —  tap to tick`));
+  if (!w.deliverables.items.length) body.push({ type: 'TextBlock', text: 'None yet — use “Suggest deliverables”.', isSubtle: true, wrap: true, spacing: 'Small' });
+  w.deliverables.items.forEach((it: any) => body.push({
+    type: 'ColumnSet', spacing: 'Small', separator: true, selectAction: { type: 'Action.Submit', data: { action: 'deliv_toggle', workId: w.id, did: it.id } },
+    columns: [
+      { type: 'Column', width: 'auto', verticalContentAlignment: 'Center', items: [{ type: 'TextBlock', text: it.done ? '✅' : '⬜' }] },
+      { type: 'Column', width: 'stretch', items: [
+        { type: 'TextBlock', text: `${KIND_ICON[it.kind] || '📎'}  ${it.label}`, wrap: true, spacing: 'None', isSubtle: it.done },
+        ...(it.file || it.verdict ? [{ type: 'TextBlock', text: `${it.file || ''}${it.file && it.verdict ? ' · ' : ''}${it.verdict || ''}`, isSubtle: true, size: 'Small', spacing: 'None', wrap: true }] : []),
+      ] },
+      { type: 'Column', width: 'auto', verticalContentAlignment: 'Center', items: [{ type: 'TextBlock', text: it.score != null ? `${it.score}` : '', color: 'Good', weight: 'Bolder', horizontalAlignment: 'Right' }] },
+    ],
+  }));
+  const actions: any[] = [];
+  if (!done) {
+    actions.push({ type: 'Action.Submit', title: '✨ Suggest deliverables', data: { action: 'suggest_deliv', workId: w.id } });
+    actions.push({ type: 'Action.Submit', title: 'Auto-assign', data: { action: 'auto_assign', workId: w.id } });
+    actions.push({ type: 'Action.Submit', title: '✓ Mark complete', style: 'positive', data: { action: 'work_complete', workId: w.id } });
+  }
+  actions.push({ type: 'Action.OpenUrl', title: 'Open in portal', url: PORTAL });
+  return card(body, actions);
+}
+
+// Inline confirm before completing a work (replaces the card in place).
+export function confirmCompleteCard(w: any) {
+  const open = w.totalActs - w.doneActs;
+  return card([
+    levelTag('Work'),
+    header(w.title, w.parentTitle || ''),
+    { type: 'Container', style: 'warning', spacing: 'Medium', items: [
+      { type: 'TextBlock', text: `Mark this work${open > 0 ? ` and its ${open} open ${open === 1 ? 'activity' : 'activities'}` : ''} complete?`, wrap: true, weight: 'Bolder' },
+      { type: 'TextBlock', text: `${w.deliverables.done}/${w.deliverables.total} deliverables are in.`, wrap: true, isSubtle: true, spacing: 'None' },
+    ] },
+  ], [
+    { type: 'Action.Submit', title: '✓ Yes, complete it', style: 'positive', data: { action: 'work_complete_go', workId: w.id } },
+    { type: 'Action.Submit', title: 'Cancel', data: { action: 'drill', kind: 'work', id: w.id } },
+  ]);
 }
 
 // ---------- initiative created & assigned ----------

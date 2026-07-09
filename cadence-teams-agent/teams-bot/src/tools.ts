@@ -2,14 +2,17 @@
 // Foundry model sees; `makeDispatch` executes a chosen tool against the Cadence
 // API and returns { data } (fed back to the model) and an optional { card }
 // (shown to the user).
-import { cadence, needTeam, needUser, needActivity, needWork } from './cadenceClient';
+import { cadence, needTeam, needUser, needActivity, needWork, needObjective } from './cadenceClient';
 import * as cards from './cards';
 
 export type ChatFile = { name: string; base64: string };
 
 export const tools = [
   { type: 'function', function: { name: 'get_portfolio', description: "Show the caller's portfolio/scorecard, scoped to their level (the CEO sees the enterprise; a VP sees their function; a member sees their own work). Use for 'how are we doing', 'what's the portfolio', 'what's at risk overall'.", parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'get_initiative_status', description: 'Get the detailed status of one initiative: result vs target, gap, sufficiency, and the work/activity breakdown. Use when the user names or refers to a specific initiative.', parameters: { type: 'object', properties: { initiative: { type: 'string', description: 'Initiative title or a distinctive part of it, e.g. "laptops" or "logistics cost".' } }, required: ['initiative'] } } },
+  { type: 'function', function: { name: 'get_initiative_status', description: 'Get the detailed status of one initiative: result vs target, gap, sufficiency, and its work breakdown (each work tappable to drill in). Use when the user names or refers to a specific initiative.', parameters: { type: 'object', properties: { initiative: { type: 'string', description: 'Initiative title or a distinctive part of it, e.g. "laptops" or "logistics cost".' } }, required: ['initiative'] } } },
+  { type: 'function', function: { name: 'get_objectives', description: "The objective-level report — every objective the caller can see, with its RAG, avg result, initiative count and overdue count, each tappable to drill into its initiatives. Use for 'which objectives are overdue', 'objective report', 'how are the objectives doing', 'show me the objectives'.", parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'get_objective', description: 'Open ONE objective: its rollup plus the initiatives under it, each tappable. Use when the user names an objective (e.g. "the dealer experience objective").', parameters: { type: 'object', properties: { objective: { type: 'string', description: 'Objective title or a distinctive part.' } }, required: ['objective'] } } },
+  { type: 'function', function: { name: 'get_work', description: 'Open ONE work package: its activities and its deliverables checklist, with interactive buttons (tick a deliverable done, auto-assign, suggest deliverables, mark complete). Use when the user names a work (e.g. "open process mapping").', parameters: { type: 'object', properties: { work: { type: 'string', description: 'Work title or a distinctive part.' } }, required: ['work'] } } },
   { type: 'function', function: { name: 'plan_initiative', description: 'Create a new initiative from a decomposition YOU produce, and assign it to a team. Break the goal into 3-6 works (phases of execution), each with 1-4 concrete activities (each with an hour estimate and a type of self/meeting/call/site). The service distributes activities across the team balanced by load and spreads dates to the deadline. Always confirm the plan with the user before calling this.', parameters: { type: 'object', properties: { title: { type: 'string' }, type: { type: 'string', enum: ['procurement', 'cost', 'onboarding', 'compliance', 'general'] }, objective: { type: 'string' }, deadline: { type: 'string', description: 'ISO date YYYY-MM-DD' }, team: { type: 'string', description: 'Team name to assign to, e.g. "IT Ops".' }, works: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, activities: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, estimateHrs: { type: 'number' }, type: { type: 'string', enum: ['self', 'meeting', 'call', 'site'] } }, required: ['title'] } } }, required: ['title', 'activities'] } } }, required: ['title', 'type', 'team', 'works'] } } },
   { type: 'function', function: { name: 'schedule_activity', description: 'Assign and/or date an existing activity. Use to place an unscheduled activity onto a person and a day.', parameters: { type: 'object', properties: { activity: { type: 'string', description: 'Activity title or distinctive part.' }, assignee: { type: 'string', description: 'Person name (optional).' }, date: { type: 'string', description: 'ISO date YYYY-MM-DD (optional).' } }, required: ['activity'] } } },
   { type: 'function', function: { name: 'reassign_activity', description: 'Move an activity to a different owner.', parameters: { type: 'object', properties: { activity: { type: 'string' }, assignee: { type: 'string' } }, required: ['activity', 'assignee'] } } },
@@ -35,6 +38,20 @@ export function makeDispatch(ctx: { userId: string; file?: ChatFile | null }) {
         case 'get_initiative_status': {
           const i = await cadence.initiative(args.initiative);
           return { data: i, card: cards.initiativeCard(i) };
+        }
+        case 'get_objectives': {
+          const r = await cadence.objectives(ctx.userId);
+          return { data: r, card: cards.objectivesReportCard(r) };
+        }
+        case 'get_objective': {
+          const o = await needObjective(args.objective);
+          const d = await cadence.objective(o.id);
+          return { data: d, card: cards.objectiveCard(d) };
+        }
+        case 'get_work': {
+          const w = await needWork(args.work);
+          const d = await cadence.workDetail(w.id);
+          return { data: d, card: cards.workCard(d) };
         }
         case 'plan_initiative': {
           const team = await needTeam(args.team);
