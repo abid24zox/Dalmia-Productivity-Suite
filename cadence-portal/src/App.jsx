@@ -10,7 +10,7 @@ import { api } from "./api";
 import OneDriveConnect from "./OneDriveConnect";
 import { MSAL_CONFIGURED } from "./msal";
 import { pickOneDriveFile, registerOneDriveOpener, odListChildren, odDownload, b64FromArrayBuffer } from "./onedrivePicker";
-import { syncTasksToOutlook } from "./calendar";
+import { syncTasksToOutlook, readWeekEvents } from "./calendar";
 
 /* =====================================================================
  * Cadence portal — LIVE. State is the shared Cadence service (single source
@@ -519,6 +519,10 @@ export default function App() {
     addCr: (cr) => persist(() => setCrs((p) => [...p, cr]), () => api.addCr(cr)),
     decideCr: (id, body) => persist(null, () => api.decideApproval(id, body)),
     addTeam: (t) => persist(() => setTeams((p) => [...p, t]), () => api.addTeam(t)),
+    // Reverse Outlook sync: the button reads the week's meetings, this posts them
+    // for AI filing, then reconciles to the returned snapshot and hands back the
+    // summary so the caller can flash counts.
+    importCalendar: async (events) => { const r = await api.importCalendar(me.id, events); if (r && r.snapshot) applySnap(r.snapshot); return r.imported || {}; },
   };
   // preserve the names used throughout the component tree
   const patchAct = store.patchAct;
@@ -893,8 +897,8 @@ function trackerRows(works, acts, me) {
   const objs = member ? [] : scopedObjectives(works, acts, me);
   const inits = member ? [] : scopeInitiatives(works, acts, me);
   const initIds = new Set(inits.map((i) => i.id));
-  const wks = member ? homeNodes(works, acts, me).filter((w) => w.level === "work")
-    : works.filter((w) => w.level === "work" && initIds.has(w.parentId));
+  const wks = member ? homeNodes(works, acts, me).filter((w) => w.level === "work" && !w.inbox)
+    : works.filter((w) => w.level === "work" && !w.inbox && initIds.has(w.parentId));
   const workIds = new Set(wks.map((w) => w.id));
   const nameOf = (id) => works.find((w) => w.id === id)?.title || null;
   const rows = [];
@@ -1769,7 +1773,9 @@ function ActivityEdit({ activity, onSave, onClose }) {
 function OutlookSyncButton({ me, acts, works, patchAct, flash, scopeActs, label = "Add to Outlook" }) {
   const [syncing, setSyncing] = useState(false);
   if (!MSAL_CONFIGURED) return null;
-  const mine = scopeActs || acts.filter((a) => a.assigneeId === me.id);
+  // Never push imported meetings back out — they already are Outlook events; a
+  // PATCH would overwrite the real meeting with our all-day task shell.
+  const mine = (scopeActs || acts.filter((a) => a.assigneeId === me.id)).filter((a) => a.source !== "outlook");
   const upcoming = mine.filter((a) => a.date && a.status !== "executed" && a.status !== "cancelled");
   const unsynced = upcoming.filter((a) => !a.outlookEventId).length;
   const wTitle = (id) => works.find((w) => w.id === id)?.title || "";
@@ -1792,12 +1798,40 @@ function OutlookSyncButton({ me, acts, works, patchAct, flash, scopeActs, label 
     </div>
   );
 }
+// The reverse of OutlookSyncButton: pull THIS WEEK's real Outlook meetings in and
+// let the AI file each under the right work (unmatched → the user's "unsorted"
+// inbox, visible in My day). Auto-adds; the user can fix a wrong match after.
+function OutlookImportButton({ store, flash }) {
+  const [busy, setBusy] = useState(false);
+  if (!MSAL_CONFIGURED) return null;
+  const run = async () => {
+    setBusy(true);
+    try {
+      const events = await readWeekEvents();
+      if (!events.length) { flash("No Outlook meetings found this week."); setBusy(false); return; }
+      const r = await store.importCalendar(events);
+      const parts = [`${r.created || 0} added`];
+      if (r.updated) parts.push(`${r.updated} updated`);
+      if (r.unsorted) parts.push(`${r.unsorted} unsorted`);
+      flash(`Imported from Outlook — ${parts.join(", ")}.`);
+    } catch (e) { console.error("[import meetings] failed:", e); flash(e.message || "Couldn't read your Outlook calendar."); }
+    setBusy(false);
+  };
+  return (
+    <button onClick={run} disabled={busy} className={btnLight} title="Pull this week's Outlook meetings in and let AI file them under the right work">
+      {busy ? <><Loader2 size={14} className="animate-spin" /> Importing…</> : <><Cloud size={14} /> Import meetings</>}
+    </button>
+  );
+}
 function MyDay({ me, works, acts, busy, setBusy, flash, patchAct, store }) {
   const [anchor, setAnchor] = useState(startOfWeek(TODAY));
   const [sel, setSel] = useState(iso(TODAY));
   const [quick, setQuick] = useState(false); const [propose, setPropose] = useState(null);
   const week = [0, 1, 2, 3, 4, 5, 6].map((i) => addDays(anchor, i));
   const wTitle = (id) => works.find((w) => w.id === id)?.title || "";
+  // Real work packages an imported meeting can be filed under (initiative › work
+  // for disambiguation); excludes the orphan "unsorted" inbox.
+  const fileTargets = works.filter((w) => w.level === "work" && !w.inbox).map((w) => { const ini = works.find((x) => x.id === w.parentId); return { id: w.id, label: ini ? `${ini.title} › ${w.title}` : w.title }; });
   const mineAll = acts.filter((a) => a.assigneeId === me.id && a.status !== "cancelled");
   const mine = mineAll.filter((a) => a.date === sel);
   const overdue = mineAll.filter((a) => isOverdue(a));
@@ -1811,8 +1845,8 @@ function MyDay({ me, works, acts, busy, setBusy, flash, patchAct, store }) {
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div><div className="text-lg font-medium text-slate-900">My day</div><div className="text-xs text-slate-400">Your assigned activities, by day. Sync the upcoming ones to your Outlook calendar.</div></div>
-        <OutlookSyncButton me={me} acts={acts} works={works} patchAct={patchAct} flash={flash} />
+        <div><div className="text-lg font-medium text-slate-900">My day</div><div className="text-xs text-slate-400">Your assigned activities, by day. Sync tasks out to Outlook, or import your meetings in.</div></div>
+        <div className="flex items-center gap-2"><OutlookImportButton store={store} flash={flash} /><OutlookSyncButton me={me} acts={acts} works={works} patchAct={patchAct} flash={flash} /></div>
       </div>
       {/* week calendar */}
       <div className="mb-4 rounded-xl border border-slate-200 bg-white p-3">
@@ -1853,11 +1887,20 @@ function MyDay({ me, works, acts, busy, setBusy, flash, patchAct, store }) {
                   <div key={a.id} className={`rounded-lg border px-3 py-2.5 ${a.status === "executed" ? "border-blue-200 bg-blue-50" : a.inProgress ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white"}`}>
                     <div className="flex items-center gap-3">
                       <Icon size={15} className="shrink-0 text-slate-400" />
-                      <div className="min-w-0 flex-1"><div className={`truncate text-sm ${a.status === "executed" ? "text-slate-500" : "text-slate-800"}`}>{a.title}</div><div className="truncate text-xs text-slate-400">{wTitle(a.workId)} · {a.actType} · {a.plannedHrs}h</div></div>
+                      <div className="min-w-0 flex-1"><div className={`flex items-center gap-1.5 truncate text-sm ${a.status === "executed" ? "text-slate-500" : "text-slate-800"}`}>{a.source === "outlook" && <span title="Imported from your Outlook calendar" className="inline-flex shrink-0 items-center gap-0.5 rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700"><Cloud size={9} /> Outlook</span>}{a.unsorted && <span title="AI couldn't match this meeting to a work — file it manually" className="inline-flex shrink-0 items-center rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">unsorted</span>}<span className="truncate">{a.title}</span></div><div className="truncate text-xs text-slate-400">{wTitle(a.workId)} · {a.actType} · {a.plannedHrs}h</div></div>
                       {a.status === "executed" ? <Chip tone="blue"><Check size={11} /> Done</Chip> : a.inProgress ? <button onClick={() => patchAct(a.id, { status: "executed", inProgress: false, actualHrs: a.plannedHrs })} className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-1 text-xs font-medium text-white"><Square size={11} /> Stop</button> : <button onClick={() => patchAct(a.id, { inProgress: true })} className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white"><Play size={11} /> Start</button>}
                     </div>
                     <div className="mt-1.5 flex items-center gap-3 pl-6">
                       <button onClick={() => setPropose(a)} className="inline-flex items-center gap-1 text-xs text-blue-700 hover:text-blue-900"><Pencil size={11} /> propose change</button>
+                      {a.source === "outlook" && (
+                        <select value={a.unsorted ? "" : a.workId} onChange={(e) => { const wid = e.target.value; if (wid) { patchAct(a.id, { workId: wid, unsorted: false }); flash("Filed under the selected work."); } }} className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-xs text-slate-600" title="File this meeting under a work package">
+                          <option value="">{a.unsorted ? "File under…" : "Move to…"}</option>
+                          {fileTargets.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                        </select>
+                      )}
+                      {a.source === "outlook" && (
+                        <button onClick={() => { store.deleteAct(a.id); flash("Removed from your day."); }} className="inline-flex items-center gap-1 text-xs text-rose-600 hover:text-rose-800" title="Remove this imported meeting"><Trash2 size={11} /> remove</button>
+                      )}
                     </div>
                   </div>
                 );

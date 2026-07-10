@@ -16,9 +16,9 @@ async function calToken() {
   return getGraphToken(CAL_SCOPES); // triggers the one-time calendar consent popup if needed
 }
 
-async function graph(path, method, token, body) {
+async function graph(path, method, token, body, extraHeaders) {
   const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
-    method, headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+    method, headers: { Authorization: `Bearer ${token}`, "content-type": "application/json", ...(extraHeaders || {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -69,4 +69,34 @@ export async function syncTasksToOutlook(tasks, saveEventId) {
     if (t.outlookEventId && !upcomingIds.has(t.id)) { await graph(`/me/events/${t.outlookEventId}`, "DELETE", token); await saveEventId(t.id, null); removed++; }
   }
   return { created, updated, removed };
+}
+
+// Reverse sync: read the signed-in user's meetings for the CURRENT week (Mon–Sun)
+// straight from Outlook, minus the events Cadence itself created (tagged
+// "Cadence"). The service then AI-files each under the right work. Returns a
+// normalized list the /api/calendar/import endpoint understands.
+export async function readWeekEvents() {
+  if (!MSAL_CONFIGURED) throw new Error("Microsoft sign-in isn't configured.");
+  const token = await calToken();
+  const now = new Date();
+  const monday = new Date(now); monday.setDate(now.getDate() - ((now.getDay() + 6) % 7)); monday.setHours(0, 0, 0, 0);
+  const sunday = new Date(monday); sunday.setDate(monday.getDate() + 7);
+  const q = `/me/calendarView?startDateTime=${monday.toISOString()}&endDateTime=${sunday.toISOString()}`
+    + `&$select=id,subject,bodyPreview,start,end,isAllDay,isCancelled,showAs,attendees,categories&$top=100&$orderby=start/dateTime`;
+  // Prefer header makes Graph return start/end in the user's local zone, so the
+  // date we slice off matches their calendar (not UTC, which can be a day off).
+  const data = await graph(q, "GET", token, null, { Prefer: `outlook.timezone="${TZ}"` });
+  return (data.value || [])
+    .filter((ev) => !(ev.categories || []).includes("Cadence")) // skip our own synced tasks
+    .map((ev) => ({
+      id: ev.id,
+      subject: ev.subject || "(no title)",
+      bodyPreview: (ev.bodyPreview || "").slice(0, 300),
+      start: ev.start?.dateTime || null,
+      end: ev.end?.dateTime || null,
+      isAllDay: !!ev.isAllDay,
+      isCancelled: !!ev.isCancelled,
+      showAs: ev.showAs || null,
+      attendees: (ev.attendees || []).map((a) => a.emailAddress?.name || a.emailAddress?.address).filter(Boolean).slice(0, 8),
+    }));
 }

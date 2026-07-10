@@ -46,6 +46,7 @@ export const api = {
   addTeam: (team) => post('/api/teams', team),
   addRemark: (remark) => post('/api/remarks', remark),
   markRemarksRead: (userId) => post('/api/remarks/read', { userId }),
+  importCalendar: (userId, events) => post('/api/calendar/import', { userId, events }),
 
   // AI (shared Foundry model) + documents + speech
   aiComplete: (system, user) => post('/api/ai/complete', { system, user }).then((r) => r.text),

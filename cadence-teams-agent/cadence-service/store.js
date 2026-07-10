@@ -417,8 +417,52 @@ function detailWork(idOrWork) {
   };
 }
 
+/* ---------- Outlook → Cadence import (reverse sync) ---------- */
+// A per-user "unsorted" bucket for meetings the AI couldn't confidently file.
+// It's an ORPHAN work (parentId null) flagged `inbox`, so it never rolls into
+// any objective/portfolio metric; its activities still surface in the owner's
+// My Day (which lists by assignee + date, regardless of the tree).
+function ensureOutlookInbox(userId) {
+  let w = db.works.find((x) => x.inbox && x.ownerId === userId);
+  if (!w) { w = { id: nid('w'), parentId: null, level: 'work', title: 'From Outlook — unsorted', type: 'general', ownerId: userId, inbox: true }; db.works.push(w); }
+  return w.id;
+}
+
+// Create/refresh activities from the signed-in user's Outlook meetings. `matches`
+// maps an event id -> a chosen workId; a missing/empty entry means "unsorted".
+// Idempotent: re-importing updates the existing activity (status/date) by its
+// stored outlookEventId instead of duplicating. Status follows the event:
+// cancelled → cancelled, already-ended → executed, otherwise planned.
+function importOutlookEvents(userId, events, matches = {}) {
+  let created = 0, updated = 0, matched = 0, unsorted = 0;
+  const now = Date.now();
+  (events || []).forEach((ev) => {
+    if (!ev || !ev.id) return;
+    const startMs = ev.start ? Date.parse(ev.start) : null;
+    const endMs = ev.end ? Date.parse(ev.end) : startMs;
+    const date = (ev.start || '').slice(0, 10) || seed.iso(seed.TODAY);
+    const durH = (startMs && endMs && endMs > startMs) ? (endMs - startMs) / 3600000 : 1;
+    const hrs = Math.min(8, Math.max(0.5, Math.round(durH * 2) / 2));
+    const status = ev.isCancelled ? 'cancelled' : (endMs && endMs < now ? 'executed' : 'planned');
+    const existing = db.acts.find((a) => a.outlookEventId === ev.id);
+    if (existing) {
+      // reflect a meeting that moved / ended / got cancelled after a prior import
+      existing.date = date; existing.status = status;
+      if (status === 'executed' && existing.actualHrs == null) existing.actualHrs = hrs;
+      updated++; return;
+    }
+    if (status === 'cancelled') return; // don't import brand-new cancelled meetings
+    const wid = matches[ev.id] || ensureOutlookInbox(userId);
+    const isUnsorted = !matches[ev.id];
+    db.acts.push({ id: nid('a'), workId: wid, title: ev.subject || 'Meeting', description: ev.bodyPreview || null, assigneeId: userId, date, startDate: date, status, plannedHrs: hrs, actualHrs: status === 'executed' ? hrs : null, actType: 'meeting', source: 'outlook', outlookEventId: ev.id, unsorted: isUnsorted });
+    created++; if (isUnsorted) unsorted++; else matched++;
+  });
+  return { created, updated, matched, unsorted };
+}
+
 module.exports = {
   db, nid, user, uName, team, METRIC_BY_TYPE,
+  ensureOutlookInbox, importOutlookEvents,
   login, snapshot,
   summarizeInitiative, detailInitiative,
   getPortfolio, getAttention, getCapacity, getApprovals, getMemberStatus,

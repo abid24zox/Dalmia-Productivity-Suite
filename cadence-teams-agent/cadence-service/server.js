@@ -141,6 +141,33 @@ app.delete('/api/activities/:id', (req, res) => { const okd = store.deleteAct(re
 app.post('/api/activities/:id/schedule', (req, res) => { const a = store.scheduleActivity(req.params.id, req.body || {}); if (!a) return bad(res, 'activity not found', 404); withSnap(res, { activity: a }); });
 app.post('/api/activities/:id/reassign', (req, res) => { const { assigneeId } = req.body || {}; if (!assigneeId) return bad(res, 'assigneeId required'); const a = store.reassignActivity(req.params.id, assigneeId); if (!a) return bad(res, 'activity not found', 404); withSnap(res, { activity: a }); });
 
+/* ---------- Outlook → Cadence import (reverse calendar sync) ----------
+   The portal reads the signed-in user's week of meetings (client-side, with the
+   Graph token) and posts them here. We skip anything already imported (by event
+   id), ask the AI to file each new meeting under the best-matching work, and
+   auto-create activities (unmatched ones land in the user's "unsorted" inbox). */
+app.post('/api/calendar/import', async (req, res) => {
+  try {
+    const { userId, events } = req.body || {};
+    if (!Array.isArray(events)) return bad(res, 'events[] required');
+    const u = store.user(userId) || store.user('u_vik');
+    const fresh = events.filter((ev) => ev && ev.id && !ev.isCancelled && !store.db.acts.some((a) => a.outlookEventId === ev.id));
+    const matches = {};
+    if (fresh.length && ai.hasFoundry) {
+      const works = store.db.works.filter((w) => w.level === 'work' && !w.inbox).map((w) => {
+        const ini = store.db.works.find((x) => x.id === w.parentId);
+        return { id: w.id, title: w.title, initiative: ini ? ini.title : null };
+      });
+      try {
+        const r = await ai.categorizeMeetings(fresh, works);
+        (r.matches || []).forEach((m) => { if (m && typeof m.i === 'number' && fresh[m.i] && m.workId && works.some((w) => w.id === m.workId)) matches[fresh[m.i].id] = m.workId; });
+      } catch { /* AI off / bad JSON → everything falls through as unsorted */ }
+    }
+    const imported = store.importOutlookEvents(u.id, events, matches);
+    withSnap(res, { imported });
+  } catch (e) { bad(res, e.message || String(e)); }
+});
+
 /* ---------- change requests / approvals ---------- */
 app.post('/api/crs', (req, res) => { const cr = store.addCr(req.body || {}); withSnap(res, { cr }); });
 app.patch('/api/crs/:id', (req, res) => { const c = store.patchCr(req.params.id, req.body || {}); if (!c) return bad(res, 'change request not found', 404); withSnap(res, { cr: c }); });
